@@ -7,6 +7,7 @@ require('dotenv').config();
 const { Telegraf } = require('telegraf');
 const { generatePresentationStructure } = require('./presentation-AI');
 const { buildPptx, cleanupFile } = require('./presentation');
+const { convertToPdf } = require('./pdf');
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) {
@@ -51,7 +52,8 @@ bot.on('text', async (ctx) => {
   }
 
   usersInProgress.add(userId);
-  let filePath = null;
+  let pptxPath = null;
+  let pdfPath = null;
 
   try {
     const statusMsg = await ctx.reply('Генерирую структуру презентации...');
@@ -65,12 +67,31 @@ bot.on('text', async (ctx) => {
       'Структура готова, собираю .pptx файл...'
     );
 
-    filePath = await buildPptx(structure);
+    pptxPath = await buildPptx(structure);
 
     await ctx.replyWithDocument(
-      { source: filePath, filename: `${structure.title}.pptx` },
-      { caption: 'Ваша презентация готова!' }
+      { source: pptxPath, filename: `${structure.title}.pptx` },
+      { caption: 'Ваша презентация готова (PPTX)!' }
     );
+
+    await ctx.telegram.editMessageText(
+      ctx.chat.id,
+      statusMsg.message_id,
+      undefined,
+      'Готовлю PDF-версию...'
+    );
+
+    try {
+      pdfPath = await convertToPdf(pptxPath);
+      await ctx.replyWithDocument(
+        { source: pdfPath, filename: `${structure.title}.pdf` },
+        { caption: 'И PDF-версия 📄' }
+      );
+    } catch (pdfErr) {
+      // PDF — не критичная часть сценария: если конвертация не удалась,
+      // пользователь уже получил .pptx, поэтому просто логируем ошибку.
+      console.error('Ошибка конвертации в PDF:', pdfErr);
+    }
 
     await ctx.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id).catch(() => {});
   } catch (err) {
@@ -81,9 +102,8 @@ bot.on('text', async (ctx) => {
     );
   } finally {
     usersInProgress.delete(userId);
-    if (filePath) {
-      cleanupFile(filePath);
-    }
+    if (pptxPath) cleanupFile(pptxPath);
+    if (pdfPath) cleanupFile(pdfPath);
   }
 });
 
