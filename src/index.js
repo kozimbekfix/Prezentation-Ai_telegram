@@ -6,9 +6,7 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 
 import { PresentationAIPipeline } from './ai/pipeline.js';
-import { createRequire } from "node:module";
-const require = createRequire(import.meta.url);
-const pptxgen = require("pptxgenjs");
+import { PresentationEngine } from './engine/pptx/index.js';
 
 dotenv.config();
 
@@ -103,9 +101,28 @@ app.listen(PORT, () => {
 });
 
 // Botni ishga tushirish (Polling)
-bot.launch().then(() => {
+// dropPendingUpdates: eski/qolib ketgan getUpdates so'rovlarini tozalab,
+// 409 Conflict xavfini kamaytiradi (ayniqsa deploy paytida eski va yangi
+// container bir lahzaga bir-biriga to'qnashganda).
+let botLaunched = false;
+
+bot.launch({ dropPendingUpdates: true }).then(() => {
+  botLaunched = true;
   console.log("[Telegram Bot] Muvaffaqiyatli ulandi va ishga tushdi!");
+}).catch((err) => {
+  console.error("[Telegram Bot] Ishga tushmadi:", err.message);
 });
 
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+// Bot hali ishga tushmasdan SIGINT/SIGTERM kelsa, bot.stop() chaqirilganda
+// Telegraf "Bot is not running!" deb xato tashlab, process qulab tushardi.
+// Shuning uchun faqat botLaunched=true bo'lsagina to'xtatamiz.
+const shutdown = (signal) => {
+  console.log(`[Process] ${signal} qabul qilindi, to'xtatilmoqda...`);
+  if (botLaunched) {
+    bot.stop(signal);
+  }
+  process.exit(0);
+};
+
+process.once('SIGINT', () => shutdown('SIGINT'));
+process.once('SIGTERM', () => shutdown('SIGTERM'));

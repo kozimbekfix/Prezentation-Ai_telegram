@@ -20,7 +20,7 @@ export const buildStepsSlide = async (pptx, content, design) => {
   
       // Qadam foni
       slide.addShape(pptx.ShapeType.rect, {
-        x: currentX, y: 1.8, w: stepWidth, h: 4.0,
+        x: currentX, y: 1.8, w: stepWidth, h: 3.6,
         fill: colors.card_background.replace('#', ''),
         line: { color: colors.accent.replace('#', ''), width: 1 }
       });
