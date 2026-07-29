@@ -106,48 +106,93 @@ function normalizeStructure(data, fallbackTitle) {
   return { title, slides };
 }
 
+// Сколько раз повторить запрос при временных ошибках Gemini
+// (503 Service Unavailable, 429 Too Many Requests) перед тем,
+// как окончательно вернуть ошибку пользователю.
+const MAX_RETRIES = 3;
+// Задержка перед повтором растёт экспоненциально: 1с, 2с, 4с...
+const BASE_RETRY_DELAY_MS = 1000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Ошибки, при которых имеет смысл повторить запрос —
+// это временные проблемы на стороне Google, а не ошибка в наших данных.
+function isRetryableError(err) {
+  const status = err.response?.status;
+  return status === 503 || status === 429;
+}
+
 /**
  * Отправляет запрос к Google Gemini и возвращает готовую
- * нормализованную структуру презентации.
+ * нормализованную структуру презентации. При временных ошибках
+ * (503/429) автоматически повторяет запрос с экспоненциальной задержкой.
  *
  * @param {string} topic - тема презентации от пользователя
  * @returns {Promise<{title: string, slides: Array}>}
  */
 async function generatePresentationStructure(topic) {
   const apiKey = process.env.GEMINI_API_KEY;
-  const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+  const model = process.env.GEMINI_MODEL || 'gemini-flash-latest';
 
   if (!apiKey) {
     throw new Error('Не задан GEMINI_API_KEY в .env');
   }
 
-  const url = `${GEMINI_API_URL}/${model}:generateContent?key=${apiKey}`;
+  const url = `${GEMINI_API_URL}/${model}:generateContent`;
 
-  const response = await axios.post(
-    url,
-    {
-      contents: [
+  let lastError;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const response = await axios.post(
+        url,
         {
-          role: 'user',
-          parts: [{ text: buildPrompt(topic) }],
+          contents: [
+            {
+              role: 'user',
+              parts: [{ text: buildPrompt(topic) }],
+            },
+          ],
+          generationConfig: {
+            temperature: 0.7,
+            // Просим Gemini вернуть чистый JSON без markdown-обёртки —
+            // это официальная возможность Gemini API, снижает шанс мусора в ответе.
+            responseMimeType: 'application/json',
+          },
         },
-      ],
-      generationConfig: {
-        temperature: 0.7,
-        // Просим Gemini вернуть чистый JSON без markdown-обёртки —
-        // это официальная возможность Gemini API, снижает шанс мусора в ответе.
-        responseMimeType: 'application/json',
-      },
-    },
-    {
-      headers: { 'Content-Type': 'application/json' },
-      timeout: 60_000,
-    }
-  );
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            // Передаём ключ через заголовок, а не query-параметр URL —
+            // так он не попадёт в логи прокси/серверов.
+            'x-goog-api-key': apiKey,
+          },
+          timeout: 60_000,
+        }
+      );
 
-  const rawText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  const parsed = extractJson(rawText);
-  return normalizeStructure(parsed, topic);
+      const rawText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      const parsed = extractJson(rawText);
+      return normalizeStructure(parsed, topic);
+    } catch (err) {
+      lastError = err;
+
+      if (isRetryableError(err) && attempt < MAX_RETRIES) {
+        const delay = BASE_RETRY_DELAY_MS * 2 ** attempt;
+        console.warn(
+          `Gemini временно недоступен (попытка ${attempt + 1}/${MAX_RETRIES + 1}), повтор через ${delay}мс...`
+        );
+        await sleep(delay);
+        continue;
+      }
+
+      throw err;
+    }
+  }
+
+  throw lastError;
 }
 
 module.exports = { generatePresentationStructure };
