@@ -1,62 +1,47 @@
-import { COORDS } from '../core/coords.js';
-import { FONTS } from '../core/themeMapper.js';
+export const buildCardsSlide = async (pptx, content, design) => {
+  const slide = pptx.addSlide();
+  const colors = design.color_palette;
 
-export const addCardsSlide = (pres, slideData, colors) => {
-  const slide = pres.addSlide();
-  slide.background = { color: colors.bg };
+  slide.background = { fill: colors.background.replace('#', '') };
 
-  // Umumiy Slayd Sarlavhasi
-  slide.addText(slideData.title, {
-    x: COORDS.SLIDE_TITLE.x,
-    y: COORDS.SLIDE_TITLE.y,
-    w: COORDS.SLIDE_TITLE.w,
-    h: COORDS.SLIDE_TITLE.h,
-    color: colors.primary,
-    fontFace: FONTS.TITLE,
-    fontSize: 32,
-    bold: true
+  // Bo'lim sarlavhasi
+  slide.addText(content.section_title, {
+    x: 0.5, y: 0.5, w: 9.0, h: 0.8,
+    fontSize: 28, bold: true,
+    color: colors.text_primary.replace('#', ''),
+    align: "left"
   });
 
-  // Kartalarni chizish
-  const items = slideData.items || [];
-  const MAX_CARDS = 3;
+  // 3 ta kartani chizish (Loop yordamida)
+  const cardWidth = 2.8;
+  const startX = 0.5;
+  const spacing = 0.3;
 
-  for (let i = 0; i < Math.min(items.length, MAX_CARDS); i++) {
-    const item = items[i];
-    const colX = COORDS.THREE_CARDS.COL_X[i];
+  content.cards.forEach((card, index) => {
+    const currentX = startX + (index * (cardWidth + spacing));
 
     // Karta foni
-    slide.addShape(pres.ShapeType.rect, {
-      x: colX,
-      y: COORDS.THREE_CARDS.CARD_Y,
-      w: COORDS.THREE_CARDS.CARD_W,
-      h: COORDS.THREE_CARDS.CARD_H,
-      fill: { color: colors.secondary }
+    slide.addShape(pptx.ShapeType.rect, {
+      x: currentX, y: 1.8, w: cardWidth, h: 3.0,
+      fill: colors.card_background.replace('#', ''),
+      line: { color: colors.secondary.replace('#', ''), width: 1, dashType: "solid" }
     });
 
     // Karta sarlavhasi
-    slide.addText(item.title, {
-      x: colX + COORDS.THREE_CARDS.TEXT_PAD_X,
-      y: COORDS.THREE_CARDS.HEADER_Y,
-      w: COORDS.THREE_CARDS.CARD_W - (COORDS.THREE_CARDS.TEXT_PAD_X * 2),
-      h: 0.8,
-      color: colors.primary,
-      fontFace: FONTS.TITLE,
-      fontSize: 20,
-      bold: true,
-      valign: pres.AlignV.top
+    slide.addText(card.title, {
+      x: currentX + 0.1, y: 2.0, w: cardWidth - 0.2, h: 0.6,
+      fontSize: 18, bold: true,
+      color: colors.primary.replace('#', ''),
+      align: "center"
     });
 
-    // Karta izohi
-    slide.addText(item.description, {
-      x: colX + COORDS.THREE_CARDS.TEXT_PAD_X,
-      y: COORDS.THREE_CARDS.BODY_Y,
-      w: COORDS.THREE_CARDS.CARD_W - (COORDS.THREE_CARDS.TEXT_PAD_X * 2),
-      h: 3.5,
-      color: colors.text,
-      fontFace: FONTS.BODY,
+    // Karta matni
+    slide.addText(card.text, {
+      x: currentX + 0.1, y: 2.8, w: cardWidth - 0.2, h: 1.8,
       fontSize: 14,
-      valign: pres.AlignV.top
+      color: colors.text_secondary.replace('#', ''),
+      align: "center",
+      valign: "top"
     });
-  }
+  });
 };

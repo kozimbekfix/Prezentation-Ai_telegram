@@ -1,63 +1,64 @@
-import 'dotenv/config';
 import { Worker } from 'bullmq';
-import path from 'path';
-import os from 'os';
-import fs from 'fs/promises';
 import { Telegraf } from 'telegraf';
-import { generatePresentationData } from './ai/pipeline.js';
-import { createPresentation } from './engine/pptx/index.js';
-import { convertToPdf, cleanupTempFiles } from './engine/pdfEngine.js';
+import Redis from 'ioredis';
+import os from 'os';
+import path from 'path';
+import fs from 'fs';
+import dotenv from 'dotenv';
+
+import { PresentationAIPipeline } from './ai/pipeline.js';
+import { PresentationEngine } from './engine/pptx/index.js';
+
+dotenv.config();
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
-
-// Redis URL ni ioredis tushunadigan formatga o'tkazish
-import Redis from 'ioredis';
 const connection = new Redis(redisUrl, { maxRetriesPerRequest: null });
 
 console.log("[Worker] Background worker ishga tushdi va navbatni kutmoqda...");
 
 const worker = new Worker('presentation-queue', async (job) => {
   const { chatId, prompt } = job.data;
-  const tempDir = os.tmpdir();
   const uniqueId = `${Date.now()}_${Math.random().toString(36).substring(7)}`;
-  const pptxPath = path.join(tempDir, `presentation_${uniqueId}.pptx`);
-  let pdfPath = null;
+  let pptxPath = null;
 
   try {
     // 1. Foydalanuvchiga xabar berish
     await bot.telegram.sendMessage(chatId, "✨ AI mavzu ustida ishlayapti va ma'lumotlarni to'playapti...");
 
-    // 2. Gemini AI orqali strukturani olish
-    const aiData = await generatePresentationData(prompt);
+    // 2. AI Pipeline ishga tushadi (Planner, Writer, Visual, Images)
+    const pipeline = new PresentationAIPipeline();
+    const aiResult = await pipeline.generateFullPresentation(prompt);
 
-    await bot.telegram.sendMessage(chatId, "🎨 Slaydlar dizayni shakllantirilmoqda va rasmlar yuklanmoqda...");
+    if (!aiResult.isSuccess) {
+      throw new Error(aiResult.error);
+    }
 
-    // 3. PPTX yaratish
-    await createPresentation(aiData, pptxPath);
+    await bot.telegram.sendMessage(chatId, "🎨 Slaydlar dizayni shakllantirilib, PowerPoint faylga yig'ilmoqda...");
 
-    await bot.telegram.sendMessage(chatId, "📄 Hujjat PDF formatiga o'girilmoqda...");
+    // 3. PPTX Engine orqali fayl yasash
+    const engine = new PresentationEngine();
+    pptxPath = await engine.createPresentation(aiResult.data, uniqueId);
 
-    // 4. LibreOffice yordamida PDF ga o'girish
-    pdfPath = await convertToPdf(pptxPath, tempDir);
-
-    // 5. Tayyor PDF faylni Telegram orqali yuborish
+    // 4. Tayyor faylni Telegram orqali foydalanuvchiga yuborish
     await bot.telegram.sendDocument(chatId, {
-      source: pdfPath,
-      filename: `${prompt.slice(0, 25).replace(/[^a-zA-Z0-9]/g, '_')}_presentation.pdf`
+      source: pptxPath,
+      filename: `${prompt.substring(0, 20).replace(/\s+/g, '_')}_presentation.pptx`
     }, {
-      caption: `✅ Sizning "${prompt}" mavzusidagi prezentatsiyangiz tayyor!`
+      caption: "✅ Mana sizning professional taqdimotingiz tayyor!"
     });
 
   } catch (error) {
-    console.error(`[Job Error] ${chatId} uchun xatolik:`, error);
+    console.error("[Worker Error]", error);
     await bot.telegram.sendMessage(chatId, `❌ Xatolik yuz berdi: ${error.message}`);
   } finally {
-    // 6. Xotirani tozalash (Garbage Collection)
-    await cleanupTempFiles([pptxPath, pdfPath]);
+    // Vaqtinchalik faylni xotiradan tozalash
+    if (pptxPath && fs.existsSync(pptxPath)) {
+      try { fs.unlinkSync(pptxPath); } catch (e) {}
+    }
   }
 }, { connection });
 
 worker.on('failed', (job, err) => {
-  console.error(`[Worker Failed] Job ID ${job.id} xato bilan tugadi:`, err.message);
+  console.error(`[Job Failed] ID: ${job.id}, Error:`, err);
 });

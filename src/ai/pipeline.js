@@ -1,53 +1,101 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
-import { presentationSchema } from './schemas.js';
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { plannerSchema, contentSchema, visualSchema, imageSelectorSchema } from "./schemas.js";
+import dotenv from "dotenv";
 
-/**
- * Gemini modelini ishga tushirish (Structured Outputs yordamida)
- */
-const initModel = () => {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error("GEMINI_API_KEY topilmadi! .env faylni tekshiring.");
-  
-  const genAI = new GoogleGenerativeAI(apiKey);
-  
-  // gemini-1.5-flash tezlik uchun eng ideal variant
-  return genAI.getGenerativeModel({
+dotenv.config();
+
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+// Biz doim eng so'nggi va tezkor modelni ishlatamiz
+const model = genAI.getGenerativeModel({ 
     model: "gemini-1.5-flash",
-    generationConfig: {
-      temperature: 0.7, // Kreativlik darajasi
-      responseMimeType: "application/json",
-      responseSchema: presentationSchema, // Biz yozgan sxemaga qat'iy rioya qiladi
+    generationConfig: { responseMimeType: "application/json" }
+});
+
+export class PresentationAIPipeline {
+  
+  async generateFullPresentation(topic) {
+    try {
+      console.log("[Pipeline] 1. Planner AI ishga tushdi...");
+      const plan = await this.runPlanner(topic);
+
+      console.log("[Pipeline] 2. Content Writer AI ishga tushdi...");
+      const content = await this.runWriter(topic, plan);
+
+      console.log("[Pipeline] 3. Visual AI ishga tushdi...");
+      const design = await this.runVisual(topic, content);
+
+      console.log("[Pipeline] 4. Image Selector AI ishga tushdi...");
+      const images = await this.runImageSelector(topic, content);
+
+      // Yakuniy yig'ilgan ma'lumot
+      return {
+        isSuccess: true,
+        data: {
+          plan,
+          content,
+          design,
+          images
+        }
+      };
+
+    } catch (error) {
+      console.error("[Pipeline Error]", error);
+      return { isSuccess: false, error: error.message };
     }
-  });
-};
-
-/**
- * Foydalanuvchi so'rovi bo'yicha prezentatsiya JSON tuzilmasini yaratish
- * 
- * @param {string} prompt - Botdan kelgan foydalanuvchi matni
- * @returns {Promise<Object>} - Tayyor strukturalangan JSON ma'lumot
- */
-export const generatePresentationData = async (prompt) => {
-  try {
-    const model = initModel();
-    
-    const systemInstruction = `Sen professional prezentatsiya dizayneri va kopiraytersan. 
-    Foydalanuvchining quyidagi mavzusiga asosan ma'lumotli, qiziqarli va lo'nda prezentatsiya tarkibini yaratib ber. 
-    - Har bir slayd matni mantiqiy va xatosiz bo'lishi shart.
-    - So'rov o'zbek tilida bo'lsa, o'zbek tilida tayyorla.
-    - Slaydlar soni 5-7 ta bo'lishi maqsadga muvofiq.
-    
-    Foydalanuvchi so'rovi: "${prompt}"`;
-
-    // AI ga yuborish
-    const result = await model.generateContent(systemInstruction);
-    const textResult = result.response.text();
-    
-    // JSON'ga o'girib qaytaramiz
-    return JSON.parse(textResult);
-
-  } catch (error) {
-    console.error("[Gemini AI Error]:", error.message);
-    throw new Error("AI xizmati hozircha band yoki xatolik yuz berdi.");
   }
-};
+
+  async runPlanner(topic) {
+    const prompt = `Role: Senior Product Strategist.
+Goal: Create a presentation structure for the topic: "${topic}".
+Rules: 
+1. Exactly 6 slides.
+2. Order: Hero, ThreeCards, ImageLeft, ThreeSteps, FourFacts, Ending.
+Return strictly as JSON matching this schema:
+${JSON.stringify(plannerSchema.shape, null, 2)}`;
+
+    const result = await model.generateContent(prompt);
+    const parsed = JSON.parse(result.response.text());
+    return plannerSchema.parse(parsed); // Zod orqali tekshirish
+  }
+
+  async runWriter(topic, plan) {
+    const prompt = `Role: Senior Copywriter.
+Goal: Write presentation content based on this plan: ${JSON.stringify(plan)}
+Topic: ${topic}
+Rules:
+1. No fluff. Be highly professional.
+2. Respect character limits strictly.
+Return strictly as JSON matching this schema:
+${JSON.stringify(contentSchema.shape, null, 2)}`;
+
+    const result = await model.generateContent(prompt);
+    const parsed = JSON.parse(result.response.text());
+    return contentSchema.parse(parsed);
+  }
+
+  async runVisual(topic, content) {
+    const prompt = `Role: Senior UI/UX Designer.
+Goal: Create a professional color palette based on this presentation content.
+Content preview: ${JSON.stringify(content.slide_1_hero)}
+Rules: Contrast must pass W3C AA standards. Returns valid HEX codes.
+Return strictly as JSON matching this schema:
+${JSON.stringify(visualSchema.shape, null, 2)}`;
+
+    const result = await model.generateContent(prompt);
+    const parsed = JSON.parse(result.response.text());
+    return visualSchema.parse(parsed);
+  }
+
+  async runImageSelector(topic, content) {
+    const prompt = `Role: Stock Photography Curator.
+Goal: Generate English search keywords for Unsplash based on presentation content.
+Topic: ${topic}
+Rules: Avoid close-up human faces. Prefer modern, minimalist, tech or business abstract imagery.
+Return strictly as JSON matching this schema:
+${JSON.stringify(imageSelectorSchema.shape, null, 2)}`;
+
+    const result = await model.generateContent(prompt);
+    const parsed = JSON.parse(result.response.text());
+    return imageSelectorSchema.parse(parsed);
+  }
+}

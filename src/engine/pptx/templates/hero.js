@@ -1,47 +1,43 @@
-import { COORDS } from '../core/coords.js';
-import { FONTS } from '../core/themeMapper.js';
+export const buildHeroSlide = async (pptx, content, design, imageQuery) => {
+  const slide = pptx.addSlide();
+  const colors = design.color_palette;
 
-export const addHeroSlide = (pres, slideData, colors) => {
-  const slide = pres.addSlide();
-  slide.background = { color: colors.bg };
+  // Fon rangi
+  slide.background = { fill: colors.background.replace('#', '') };
 
-  // Kichik yorliq (Badge)
-  slide.addText("AI GENERATED PRESENTATION", {
-    x: COORDS.HERO.BADGE.x,
-    y: COORDS.HERO.BADGE.y,
-    w: COORDS.HERO.BADGE.w,
-    h: COORDS.HERO.BADGE.h,
-    color: colors.accent,
-    fontFace: FONTS.BODY,
-    fontSize: 12,
-    bold: true,
-    align: pres.AlignH.center
-  });
-
-  // Asosiy Sarlavha
-  slide.addText(slideData.title.toUpperCase(), {
-    x: COORDS.HERO.TITLE.x,
-    y: COORDS.HERO.TITLE.y,
-    w: COORDS.HERO.TITLE.w,
-    h: COORDS.HERO.TITLE.h,
-    color: colors.primary,
-    fontFace: FONTS.TITLE,
+  // Asosiy Sarlavha (Katta va qalin)
+  slide.addText(content.title, {
+    x: 1.0, 
+    y: 1.8, 
+    w: 8.0, 
+    h: 1.5,
     fontSize: 44,
     bold: true,
-    align: pres.AlignH.center
+    color: colors.text_primary.replace('#', ''),
+    align: "center",
+    valign: "middle",
+    fontFace: "Arial"
   });
 
-  // Kichik sarlavha (Subtitle)
-  if (slideData.subtitle) {
-    slide.addText(slideData.subtitle, {
-      x: COORDS.HERO.SUBTITLE.x,
-      y: COORDS.HERO.SUBTITLE.y,
-      w: COORDS.HERO.SUBTITLE.w,
-      h: COORDS.HERO.SUBTITLE.h,
-      color: colors.text,
-      fontFace: FONTS.BODY,
-      fontSize: 18,
-      align: pres.AlignH.center
-    });
-  }
+  // Qisqa tavsif (Subtitle)
+  slide.addText(content.subtitle, {
+    x: 1.5, 
+    y: 3.5, 
+    w: 7.0, 
+    h: 1.0,
+    fontSize: 22,
+    color: colors.text_secondary.replace('#', ''),
+    align: "center",
+    valign: "top",
+    fontFace: "Arial"
+  });
+
+  // Dekorativ chiziq (Accent color)
+  slide.addShape(pptx.ShapeType.rect, {
+    x: 4.5, 
+    y: 3.3, 
+    w: 1.0, 
+    h: 0.05,
+    fill: colors.accent.replace('#', '')
+  });
 };

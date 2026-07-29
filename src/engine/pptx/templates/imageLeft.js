@@ -1,66 +1,37 @@
-import { COORDS } from '../core/coords.js';
-import { FONTS } from '../core/themeMapper.js';
-import { getEmbeddedImage } from '../../../utils/imageEngine.js';
+export const buildImageLeftSlide = async (pptx, content, design, imageQuery) => {
+  const slide = pptx.addSlide();
+  const colors = design.color_palette;
 
-export const addImageLeftSlide = async (pres, slideData, colors) => {
-  const slide = pres.addSlide();
-  slide.background = { color: colors.bg };
+  slide.background = { fill: colors.background.replace('#', '') };
 
-  // AI taqdim etgan kalit so'z bo'yicha Unsplash'dan rasmni yuklab olish
-  const keyword = slideData.imageKeyword || slideData.title;
-  const base64Image = await getEmbeddedImage(keyword);
-
-  if (base64Image) {
-    slide.addImage({
-      data: base64Image,
-      x: COORDS.IMAGE_LEFT.IMG.x,
-      y: COORDS.IMAGE_LEFT.IMG.y,
-      w: COORDS.IMAGE_LEFT.IMG.w,
-      h: COORDS.IMAGE_LEFT.IMG.h,
-      sizing: { type: 'cover' }
-    });
-  } else {
-    // Agar internet/rasm topilmasa, o'rniga bo'yalgan kvadrat qo'yamiz
-    slide.addShape(pres.ShapeType.rect, {
-      x: COORDS.IMAGE_LEFT.IMG.x,
-      y: COORDS.IMAGE_LEFT.IMG.y,
-      w: COORDS.IMAGE_LEFT.IMG.w,
-      h: COORDS.IMAGE_LEFT.IMG.h,
-      fill: { color: colors.secondary }
-    });
-  }
-
-  // O'ng taraf - Sarlavha
-  slide.addText(slideData.title, {
-    x: COORDS.IMAGE_LEFT.TITLE.x,
-    y: COORDS.IMAGE_LEFT.TITLE.y,
-    w: COORDS.IMAGE_LEFT.TITLE.w,
-    h: COORDS.IMAGE_LEFT.TITLE.h,
-    color: colors.primary,
-    fontFace: FONTS.TITLE,
-    fontSize: 28,
-    bold: true
+  // Chap tomondagi rasm uchun joy (Placeholder yoki Unsplash URL)
+  // Eslatma: Image Engine keyinchalik bu yerga real rasm yuklaydi
+  slide.addShape(pptx.ShapeType.rect, {
+    x: 0.8, y: 1.2, w: 4.2, h: 4.5,
+    fill: colors.card_background.replace('#', ''),
+    line: { color: colors.secondary.replace('#', ''), width: 1 }
   });
 
-  // O'ng taraf - Elementlar (Bullets)
-  const items = slideData.items || [];
-  let currentY = COORDS.IMAGE_LEFT.BULLET_Y_START;
+  slide.addText(`[Rasm: ${imageQuery}]`, {
+    x: 1.0, y: 3.0, w: 3.8, h: 1.0,
+    fontSize: 12, color: colors.text_secondary.replace('#', ''),
+    align: "center"
+  });
 
-  items.slice(0, 3).forEach((item) => {
-    slide.addText(
-      [
-        { text: item.title + "\n", options: { bold: true, color: colors.accent, fontSize: 16 } },
-        { text: item.description, options: { color: colors.text, fontSize: 14 } }
-      ],
-      {
-        x: COORDS.IMAGE_LEFT.BULLET_X,
-        y: currentY,
-        w: COORDS.IMAGE_LEFT.BULLET_W,
-        h: COORDS.IMAGE_LEFT.BULLET_H,
-        fontFace: FONTS.BODY,
-        valign: pres.AlignV.top
-      }
-    );
-    currentY += COORDS.IMAGE_LEFT.BULLET_GAP;
+  // O'ng tomondagi sarlavha
+  slide.addText(content.title, {
+    x: 5.4, y: 1.2, w: 3.8, h: 1.0,
+    fontSize: 26, bold: true,
+    color: colors.text_primary.replace('#', ''),
+    align: "left"
+  });
+
+  // O'ng tomondagi asosiy matn
+  slide.addText(content.content, {
+    x: 5.4, y: 2.4, w: 3.8, h: 3.0,
+    fontSize: 15,
+    color: colors.text_secondary.replace('#', ''),
+    align: "left",
+    valign: "top"
   });
 };

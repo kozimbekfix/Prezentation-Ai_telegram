@@ -1,0 +1,27 @@
+{
+  "name": "prezo-ai",
+  "version": "1.0.0",
+  "description": "Production-grade AI Presentation Platform",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "worker": "node src/worker.js",
+    "dev": "node --watch src/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kozimbekfix/Prezentation-Ai_telegram.git"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "bullmq": "^5.81.2",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "ioredis": "^5.11.1",
+    "pptxgenjs": "^4.0.1",
+    "telegraf": "^4.16.3",
+    "zod": "^4.4.3"
+  }
+}

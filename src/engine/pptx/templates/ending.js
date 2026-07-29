@@ -1,53 +1,31 @@
-import { COORDS } from '../core/coords.js';
-import { FONTS } from '../core/themeMapper.js';
-
-export const addEndingSlide = (pres, slideData, colors) => {
-  const slide = pres.addSlide();
-  slide.background = { color: colors.primary };
-
-  slide.addText(slideData.title, {
-    x: COORDS.ENDING.TITLE.x,
-    y: COORDS.ENDING.TITLE.y,
-    w: COORDS.ENDING.TITLE.w,
-    h: COORDS.ENDING.TITLE.h,
-    color: "FFFFFF",
-    fontFace: FONTS.TITLE,
-    fontSize: 40,
-    bold: true,
-    align: pres.AlignH.center
-  });
-
-  if (slideData.subtitle) {
-    slide.addText(slideData.subtitle, {
-      x: COORDS.ENDING.SUBTITLE.x,
-      y: COORDS.ENDING.SUBTITLE.y,
-      w: COORDS.ENDING.SUBTITLE.w,
-      h: COORDS.ENDING.SUBTITLE.h,
-      color: colors.bg,
-      fontFace: FONTS.BODY,
-      fontSize: 18,
-      align: pres.AlignH.center
+export const buildEndingSlide = async (pptx, content, design) => {
+    const slide = pptx.addSlide();
+    const colors = design.color_palette;
+  
+    slide.background = { fill: colors.background.replace('#', '') };
+  
+    // Asosiy yakuniy sarlavha
+    slide.addText(content.title, {
+      x: 1.0, y: 1.8, w: 8.0, h: 1.2,
+      fontSize: 40, bold: true,
+      color: colors.text_primary.replace('#', ''),
+      align: "center",
+      valign: "middle"
     });
-  }
-
-  slide.addShape(pres.ShapeType.roundRect, {
-    x: COORDS.ENDING.CTA_BOX.x,
-    y: COORDS.ENDING.CTA_BOX.y,
-    w: COORDS.ENDING.CTA_BOX.w,
-    h: COORDS.ENDING.CTA_BOX.h,
-    fill: { color: colors.accent }
-  });
-
-  slide.addText("E'tiboringiz uchun rahmat!", {
-    x: COORDS.ENDING.CTA_BOX.x,
-    y: COORDS.ENDING.CTA_BOX.y,
-    w: COORDS.ENDING.CTA_BOX.w,
-    h: COORDS.ENDING.CTA_BOX.h,
-    color: "FFFFFF",
-    fontFace: FONTS.TITLE,
-    fontSize: 14,
-    bold: true,
-    align: pres.AlignH.center,
-    valign: pres.AlignV.middle
-  });
-};
+  
+    // Harakatga chaqiruv (CTA)
+    slide.addText(content.call_to_action, {
+      x: 1.5, y: 3.2, w: 7.0, h: 0.8,
+      fontSize: 20,
+      color: colors.secondary.replace('#', ''),
+      align: "center"
+    });
+  
+    // Aloqa ma'lumotlari
+    slide.addText(content.contact_info, {
+      x: 2.0, y: 4.5, w: 6.0, h: 0.6,
+      fontSize: 16, bold: true,
+      color: colors.text_secondary.replace('#', ''),
+      align: "center"
+    });
+  };

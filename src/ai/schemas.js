@@ -1,54 +1,73 @@
-import { SchemaType } from "@google/generative-ai";
+import { z } from "zod";
 
-/**
- * Gemini 1.5 uchun qat'iy JSON tuzilmasi.
- * Ushbu sxema orqali AI aniq 6 xil slayd turidan birini tanlashga majbur qilinadi.
- */
-export const presentationSchema = {
-  type: SchemaType.OBJECT,
-  properties: {
-    theme: {
-      type: SchemaType.STRING,
-      description: "Prezentatsiya dizayni uchun mavzu. Faqat quyidagilardan birini tanlang: 'modern_blue', 'dark_tech', 'nature_green', 'elegant_red', 'minimal_light'"
-    },
-    slides: {
-      type: SchemaType.ARRAY,
-      description: "Prezentatsiyadagi slaydlar ro'yxati. Odatda 5-7 ta slayd bo'lishi kerak.",
-      items: {
-        type: SchemaType.OBJECT,
-        properties: {
-          type: {
-            type: SchemaType.STRING,
-            description: "Slaydning strukturaviy turi. Faqat quyidagilardan biri: 'HERO' (bosh sahifa), 'THREE_CARDS' (3 ta ustunli ma'lumot), 'IMAGE_LEFT' (chapda rasm, o'ngda matn), 'THREE_STEPS' (3 ta qadamli jarayon), 'FOUR_FACTS' (2x2 to'rtta fakt), 'ENDING' (xulosa sahifasi)"
-          },
-          title: { 
-            type: SchemaType.STRING, 
-            description: "Slaydning asosiy sarlavhasi (qisqa va lo'nda)" 
-          },
-          subtitle: { 
-            type: SchemaType.STRING, 
-            description: "Kichik sarlavha yoki slayd haqida qisqacha ta'rif (faqat HERO va ENDING slaydlari uchun)" 
-          },
-          imageKeyword: { 
-            type: SchemaType.STRING, 
-            description: "Unsplash orqali tegishli rasm qidirish uchun 1-2 ta INGLIZCHA so'z. Masalan: 'technology', 'business meeting', 'nature'" 
-          },
-          items: {
-            type: SchemaType.ARRAY,
-            description: "Slayd ichidagi elementlar (masalan: 3 ta karta, 3 ta qadam, yoki 4 ta fakt). Faqat THREE_CARDS, THREE_STEPS, FOUR_FACTS va IMAGE_LEFT slaydlarida ishlatiladi.",
-            items: {
-              type: SchemaType.OBJECT,
-              properties: {
-                title: { type: SchemaType.STRING, description: "Element sarlavhasi" },
-                description: { type: SchemaType.STRING, description: "Element izohi (maksimal 2-3 ta gap)" }
-              },
-              required: ["title", "description"]
-            }
-          }
-        },
-        required: ["type", "title"]
-      }
-    }
-  },
-  required: ["theme", "slides"]
-};
+// 1. Planner Schema (Faqat strategiya)
+export const plannerSchema = z.object({
+  presentation_title: z.string(),
+  target_audience: z.string(),
+  tone: z.string(),
+  slides: z.array(z.object({
+    slide_number: z.number().min(1).max(6),
+    slide_type: z.enum(["Hero", "ThreeCards", "ImageLeft", "ThreeSteps", "FourFacts", "Ending"]),
+    objective: z.string(),
+    key_concept: z.string()
+  })).length(6) // Qat'iy 6 ta slayd
+});
+
+// 2. Content Writer Schema (Faqat matn, qat'iy uzunliklar)
+export const contentSchema = z.object({
+  slide_1_hero: z.object({
+    title: z.string().max(50),
+    subtitle: z.string().max(120)
+  }),
+  slide_2_three_cards: z.object({
+    section_title: z.string().max(40),
+    cards: z.array(z.object({
+      title: z.string().max(30),
+      text: z.string().max(100)
+    })).length(3)
+  }),
+  slide_3_image_left: z.object({
+    title: z.string().max(40),
+    content: z.string().max(250)
+  }),
+  slide_4_three_steps: z.object({
+    section_title: z.string().max(40),
+    steps: z.array(z.object({
+      step_number: z.number(),
+      title: z.string().max(30),
+      description: z.string().max(90)
+    })).length(3)
+  }),
+  slide_5_four_facts: z.object({
+    section_title: z.string().max(40),
+    facts: z.array(z.object({
+      metric: z.string().max(15),
+      detail: z.string().max(60)
+    })).length(4)
+  }),
+  slide_6_ending: z.object({
+    title: z.string().max(40),
+    call_to_action: z.string().max(80),
+    contact_info: z.string().max(50)
+  })
+});
+
+// 3. Visual AI Schema (Faqat dizayn va ranglar)
+export const visualSchema = z.object({
+  theme_mode: z.enum(["dark", "light"]),
+  color_palette: z.object({
+    primary: z.string().regex(/^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/),
+    secondary: z.string().regex(/^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/),
+    accent: z.string().regex(/^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/),
+    background: z.string().regex(/^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/),
+    card_background: z.string().regex(/^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/),
+    text_primary: z.string().regex(/^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/),
+    text_secondary: z.string().regex(/^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/)
+  })
+});
+
+// 4. Image Selector Schema (Kalit so'zlar)
+export const imageSelectorSchema = z.object({
+  slide_1_hero_image_query: z.string(),
+  slide_3_left_image_query: z.string()
+});

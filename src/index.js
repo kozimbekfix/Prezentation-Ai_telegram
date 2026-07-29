@@ -1,63 +1,56 @@
-import 'dotenv/config';
 import { Telegraf } from 'telegraf';
-import express from 'express';
 import { Queue } from 'bullmq';
 import Redis from 'ioredis';
+import express from 'express';
+import dotenv from 'dotenv';
 
-const token = process.env.TELEGRAM_BOT_TOKEN;
-if (!token) {
-  console.error("TELEGRAM_BOT_TOKEN topilmadi!");
-  process.exit(1);
-}
+dotenv.config();
 
-const bot = new Telegraf(token);
 const app = express();
-app.use(express.json());
-
 const PORT = process.env.PORT || 3000;
+
+const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
 const connection = new Redis(redisUrl, { maxRetriesPerRequest: null });
 
-// BullMQ Navbatini ulash
+// BullMQ navbatini yaratamiz
 const presentationQueue = new Queue('presentation-queue', { connection });
 
-// 1. Render Health Check uchun oddiy marshrut
-app.get('/', (req, res) => {
-  res.status(200).send('AI Presentation Bot is running successfully!');
-});
-
-// 2. Telegram Bot Buyruqlari
+// /start komandasi
 bot.start((ctx) => {
-  ctx.reply(
-    "Assalomu alaykum! 🤖 AI Prezentatsiya botiga xush kelibsiz.\n\n" +
-    "Menga xohlagan mavzuni yozib yuboring (masalan: *Sun'iy intellekt kelajagi* yoki *Marketing strategiyalari*), men siz uchun professional PDF prezentatsiya tayyorlab beraman!"
-  );
+  ctx.reply("Assalomu alaykum! Prezo-AI botiga xush kelibsiz. Menga istalgan mavzuni yuboring, men sizga 6 ta slayddan iborat professional PowerPoint taqdimot tayyorlab beraman.");
 });
 
+// Har qanday matnli xabarni qabul qilish
 bot.on('text', async (ctx) => {
-  const prompt = ctx.message.text.trim();
-  
-  if (prompt.length < 3) {
-    return ctx.reply("Iltimos, mavzuni biroz batafsilroq yozing.");
-  }
-
+  const prompt = ctx.message.text;
   const chatId = ctx.chat.id;
-  await ctx.reply("⏳ Sizning so'rovingiz navbatga qo'shildi. Tez orada tayyor bo'ladi...");
 
-  // Navbatga qo'shish
-  await presentationQueue.add('generate-presentation', { chatId, prompt });
+  if (prompt.startsWith('/')) return; // Komandalarni e'tiborsiz qoldirish
+
+  await ctx.reply(`🚀 "${prompt}" mavzusi bo'yicha navbatga qo'shildi. Iltimos, biroz kuting...`);
+
+  // Navbatga ish qo'shish
+  await presentationQueue.add('generate-presentation', {
+    chatId,
+    prompt
+  });
 });
 
-// Botni ishga tushirish
-bot.launch().then(() => {
-  console.log("[Telegram Bot] Muvaffaqiyatli ishga tushdi!");
+// Express server (Render/Health-check uchun)
+app.get('/', (req, res) => {
+  res.send('Prezo-AI Bot Server is running!');
 });
 
-// Express serverni ochish (Render talabi)
 app.listen(PORT, () => {
-  console.log(`[HTTP Server] Port ${PORT} da ishlamoqda.`);
+  console.log(`[Server] Web server ${PORT}-portda ishga tushdi.`);
 });
 
-// Xavfsiz to'xtatish
+// Botni ishga tushirish (Polling)
+bot.launch().then(() => {
+  console.log("[Telegram Bot] Muvaffaqiyatli ulandi va ishga tushdi!");
+});
+
+// Dastur to'xtaganda ulanishlarni yopish
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
