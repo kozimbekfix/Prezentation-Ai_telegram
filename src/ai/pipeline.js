@@ -7,7 +7,7 @@ dotenv.config();
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 // Biz doim eng so'nggi va tezkor modelni ishlatamiz
 const model = genAI.getGenerativeModel({ 
-  model: "gemini-1.5-pro",
+  model: "gemini-flash-latest",
   generationConfig: { responseMimeType: "application/json" }
 });
 
