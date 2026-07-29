@@ -94,6 +94,21 @@ bot.catch((err, ctx) => {
 bot.launch();
 console.log('Бот запущен...');
 
+// Render Web Service требует открытый HTTP-порт, иначе деплой
+// зависает в статусе "In Progress". Этот же эндпоинт удобно
+// использовать для keep-alive пинга (cron-job.org и т.п.).
+const http = require('http');
+const PORT = process.env.PORT || 3000;
+
+http
+  .createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Бот работает');
+  })
+  .listen(PORT, () => {
+    console.log(`HTTP-сервер слушает порт ${PORT}`);
+  });
+
 // Корректное завершение работы
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
