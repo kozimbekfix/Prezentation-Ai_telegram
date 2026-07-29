@@ -6,7 +6,9 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 
 import { PresentationAIPipeline } from './ai/pipeline.js';
-import { PresentationEngine } from './engine/pptx/index.js';
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const pptxgen = require("pptxgenjs");
 
 dotenv.config();
 
