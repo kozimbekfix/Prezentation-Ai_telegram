@@ -1,4 +1,6 @@
-import pptxgen from "pptxgenjs";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const pptxgen = require("pptxgenjs");
 import path from "path";
 import os from "os";
 
