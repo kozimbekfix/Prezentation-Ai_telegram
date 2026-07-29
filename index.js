@@ -1,0 +1,99 @@
+// index.js
+// Точка входа: инициализация Telegram-бота и обработка сценария
+// "/start -> тема -> генерация -> отправка файла".
+
+require('dotenv').config();
+
+const { Telegraf } = require('telegraf');
+const { generatePresentationStructure } = require('./presentation-AI');
+const { buildPptx, cleanupFile } = require('./presentation');
+
+const BOT_TOKEN = process.env.BOT_TOKEN;
+if (!BOT_TOKEN) {
+  console.error('Ошибка: не задан BOT_TOKEN в .env');
+  process.exit(1);
+}
+
+const bot = new Telegraf(BOT_TOKEN);
+
+// Простое множество для защиты от повторных запросов от одного
+// пользователя, пока предыдущая генерация ещё не завершилась.
+const usersInProgress = new Set();
+
+bot.start((ctx) => {
+  ctx.reply(
+    'Привет! Я создаю презентации (.pptx) по любой теме с помощью ИИ.\n\n' +
+    'Просто напиши тему презентации, например:\n' +
+    '«История искусственного интеллекта»'
+  );
+});
+
+bot.help((ctx) => {
+  ctx.reply('Напиши тему презентации текстом — я сгенерирую .pptx файл и пришлю его сюда же.');
+});
+
+// Обрабатываем любое текстовое сообщение как тему презентации
+// (кроме команд, которые начинаются с "/").
+bot.on('text', async (ctx) => {
+  const topic = ctx.message.text.trim();
+
+  if (topic.startsWith('/')) {
+    return; // неизвестная команда — игнорируем
+  }
+
+  if (!topic) {
+    return ctx.reply('Пожалуйста, напиши тему презентации текстом.');
+  }
+
+  const userId = ctx.from.id;
+  if (usersInProgress.has(userId)) {
+    return ctx.reply('Подожди, предыдущая презентация ещё генерируется 🙂');
+  }
+
+  usersInProgress.add(userId);
+  let filePath = null;
+
+  try {
+    const statusMsg = await ctx.reply('Генерирую структуру презентации...');
+
+    const structure = await generatePresentationStructure(topic);
+
+    await ctx.telegram.editMessageText(
+      ctx.chat.id,
+      statusMsg.message_id,
+      undefined,
+      'Структура готова, собираю .pptx файл...'
+    );
+
+    filePath = await buildPptx(structure);
+
+    await ctx.replyWithDocument(
+      { source: filePath, filename: `${structure.title}.pptx` },
+      { caption: 'Ваша презентация готова!' }
+    );
+
+    await ctx.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id).catch(() => {});
+  } catch (err) {
+    console.error('Ошибка при генерации презентации:', err);
+    await ctx.reply(
+      'Что-то пошло не так при генерации презентации 😔\n' +
+      'Попробуй ещё раз чуть позже или с другой темой.'
+    );
+  } finally {
+    usersInProgress.delete(userId);
+    if (filePath) {
+      cleanupFile(filePath);
+    }
+  }
+});
+
+bot.catch((err, ctx) => {
+  console.error(`Необработанная ошибка для ${ctx.updateType}`, err);
+});
+
+bot.launch();
+console.log('Бот запущен...');
+
+// Корректное завершение работы
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
