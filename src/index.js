@@ -1,4 +1,4 @@
-import { Telegraf } from 'telegraf';
+import { Telegraf, Markup } from 'telegraf';
 import { Queue, Worker } from 'bullmq';
 import Redis from 'ioredis';
 import express from 'express';
@@ -21,11 +21,15 @@ const connection = new Redis(redisUrl, { maxRetriesPerRequest: null });
 // BullMQ navbatini yaratamiz
 const presentationQueue = new Queue('presentation-queue', { connection });
 
+// Til tanlanishini kutayotgan mavzular: userId -> mavzu matni.
+// Foydalanuvchi mavzuni yozgach, tilni tanlagunicha shu yerda saqlanadi.
+const pendingTopics = new Map();
+
 // --- WORKER QISMI (Navbatdagi vazifalarni bajaruvchi) ---
 console.log("[Worker] Background worker ishga tushdi va navbatni kutmoqda...");
 
 const worker = new Worker('presentation-queue', async (job) => {
-  const { chatId, prompt } = job.data;
+  const { chatId, prompt, language } = job.data;
   const uniqueId = `${Date.now()}_${Math.random().toString(36).substring(7)}`;
   let pptxPath = null;
   let pdfPath = null;
@@ -34,7 +38,7 @@ const worker = new Worker('presentation-queue', async (job) => {
     await bot.telegram.sendMessage(chatId, "✨ AI mavzu ustida ishlayapti va ma'lumotlarni to'playapti...");
 
     const pipeline = new PresentationAIPipeline();
-    const aiResult = await pipeline.generateFullPresentation(prompt);
+    const aiResult = await pipeline.generateFullPresentation(prompt, language);
 
     if (!aiResult.isSuccess) {
       throw new Error(aiResult.error);
@@ -91,19 +95,51 @@ bot.start((ctx) => {
   ctx.reply("Assalomu alaykum! Prezo-AI botiga xush kelibsiz. Menga istalgan mavzuni yuboring, men sizga 6 ta slayddan iborat professional PowerPoint taqdimot tayyorlab beraman.");
 });
 
-// Har qanday matnli xabarni qabul qilish
+// Har qanday matnli xabarni mavzu sifatida qabul qilamiz -> til tanlashni so'raymiz
 bot.on('text', async (ctx) => {
   const prompt = ctx.message.text;
-  const chatId = ctx.chat.id;
+  const userId = ctx.from.id;
 
   if (prompt.startsWith('/')) return;
+
+  pendingTopics.set(userId, prompt);
+
+  await ctx.reply(
+    `Mavzu: "${prompt}"\n\nQaysi tilda tayyorlaymiz?`,
+    Markup.inlineKeyboard([
+      [
+        Markup.button.callback('🇷🇺 Русский', 'lang_ru'),
+        Markup.button.callback("🇺🇿 O'zbekcha", 'lang_uz'),
+      ],
+    ])
+  );
+});
+
+// Til tanlangach — navbatga qo'shamiz
+bot.action(/^lang_(ru|uz)$/, async (ctx) => {
+  const userId = ctx.from.id;
+  const chatId = ctx.chat.id;
+  const language = ctx.match[1];
+  const prompt = pendingTopics.get(userId);
+
+  await ctx.answerCbQuery();
+
+  if (!prompt) {
+    return ctx.reply('Sessiya eskirdi, mavzuni qayta yozing.');
+  }
+
+  pendingTopics.delete(userId);
+
+  const languageLabel = language === 'uz' ? "O'zbekcha" : 'Русский';
+  await ctx.editMessageText(`Mavzu: "${prompt}"\nTil: ${languageLabel} ✅`);
 
   try {
     await ctx.reply(`🚀 "${prompt}" mavzusi bo'yicha navbatga qo'shildi. Iltimos, biroz kuting...`);
 
     await presentationQueue.add('generate-presentation', {
       chatId,
-      prompt
+      prompt,
+      language,
     });
 
   } catch (error) {

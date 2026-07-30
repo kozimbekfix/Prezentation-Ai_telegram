@@ -40,13 +40,21 @@ export class PresentationAIPipeline {
     }
   }
   
-  async generateFullPresentation(topic) {
+  // Til kodini AI uchun tushunarli to'liq nomga o'giramiz.
+  static LANGUAGE_NAMES = {
+    ru: "Russian (Русский)",
+    uz: "Uzbek (O'zbek tili, Latin script)",
+  };
+
+  async generateFullPresentation(topic, language = "ru") {
+    const languageName = PresentationAIPipeline.LANGUAGE_NAMES[language] || PresentationAIPipeline.LANGUAGE_NAMES.ru;
+
     try {
-      console.log("[Pipeline] 1. Planner AI ishga tushdi...");
-      const plan = await this.runPlanner(topic);
+      console.log(`[Pipeline] 1. Planner AI ishga tushdi... (til: ${languageName})`);
+      const plan = await this.runPlanner(topic, languageName);
 
       console.log("[Pipeline] 2. Content Writer AI ishga tushdi...");
-      const content = await this.runWriter(topic, plan);
+      const content = await this.runWriter(topic, plan, languageName);
 
       console.log("[Pipeline] 3. Visual AI ishga tushdi...");
       const design = await this.runVisual(topic, content);
@@ -71,12 +79,13 @@ export class PresentationAIPipeline {
     }
   }
 
-  async runPlanner(topic) {
+  async runPlanner(topic, languageName) {
     const prompt = `Role: Senior Product Strategist.
 Goal: Create a presentation structure for the topic: "${topic}".
 Rules: 
 1. Exactly 6 slides.
 2. Order: Hero, ThreeCards, ImageLeft, ThreeSteps, FourFacts, Ending.
+3. Write the "objective" and "key_concept" fields in ${languageName}.
 Return strictly as JSON matching this schema:
 ${JSON.stringify(plannerSchema.shape, null, 2)}`;
 
@@ -85,13 +94,15 @@ ${JSON.stringify(plannerSchema.shape, null, 2)}`;
     return plannerSchema.parse(parsed); // Zod orqali tekshirish
   }
 
-  async runWriter(topic, plan) {
+  async runWriter(topic, plan, languageName) {
     const prompt = `Role: Senior Copywriter.
 Goal: Write presentation content based on this plan: ${JSON.stringify(plan)}
 Topic: ${topic}
 Rules:
-1. No fluff. Be highly professional.
-2. Respect character limits strictly. EVERY field below has a HARD MAXIMUM
+1. Write ALL text fields (titles, subtitles, cards, steps, facts, everything)
+   strictly in ${languageName}. Do not mix in other languages.
+2. No fluff. Be highly professional.
+3. Respect character limits strictly. EVERY field below has a HARD MAXIMUM
    character count — never exceed it:
    - slide_1_hero.title: <=50 chars
    - slide_1_hero.subtitle: <=120 chars
@@ -129,7 +140,12 @@ ${JSON.stringify(contentSchema.shape, null, 2)}`;
   sanitizeContentLengths(parsed) {
     const truncate = (str, max) => {
       if (typeof str !== "string" || str.length <= max) return str;
-      return str.slice(0, max - 1).trimEnd() + "…";
+      // Sўzни ярмида эмас, охирги бўшлиқдан кесамиз — токи "structur…" каби
+      // ярим сўзлар билан тугамасин.
+      const sliced = str.slice(0, max - 1);
+      const lastSpace = sliced.lastIndexOf(" ");
+      const safeSlice = lastSpace > max * 0.6 ? sliced.slice(0, lastSpace) : sliced;
+      return safeSlice.trimEnd() + "…";
     };
 
     const setIfExists = (obj, key, max) => {

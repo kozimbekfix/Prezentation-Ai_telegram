@@ -1,6 +1,17 @@
 // Hero (1-slayd) — namunadagi "Амир Темур: Великий завоеватель" uslubidagi
 // sxema: chap yarmida rasm (yoki rasm topilmasa — bezakli aksent panel),
 // o'ng yarmida katta sarlavha va tavsif matni.
+
+// Sarlavha necha qatorga bo'linishini taxminiy hisoblaymiz, shunda
+// pastdagi aksent chiziq va tavsif matni har doim sarlavhadan PASTDA
+// joylashadi (uzun sarlavhalarda matn ustidan chiziq o'tib ketmasligi uchun).
+function estimateLines(text, widthIn, fontSize) {
+  if (!text) return 1;
+  // Taxminiy: bold Georgia shriftida bitta belgi eni ~ fontSize * 0.52pt
+  const charsPerLine = Math.max(8, Math.floor((widthIn * 72) / (fontSize * 0.52)));
+  return Math.max(1, Math.ceil(text.length / charsPerLine));
+}
+
 export const buildHeroSlide = async (pptx, content, design, imageQuery, imageData) => {
   const slide = pptx.addSlide();
   const colors = design.color_palette;
@@ -28,22 +39,29 @@ export const buildHeroSlide = async (pptx, content, design, imageQuery, imageDat
   // O'ng panel — sarlavha va tavsif
   const textX = imgW + 0.5;
   const textW = 10 - textX - 0.5;
+  const titleY = 1.4;
+  const titleFontSize = 32;
 
   slide.addText(content.title, {
-    x: textX, y: 1.4, w: textW, h: 1.6,
-    fontSize: 32, bold: true,
+    x: textX, y: titleY, w: textW, h: 1.9,
+    fontSize: titleFontSize, bold: true,
     color: c(colors.text_primary),
     align: "left", valign: "top",
     fontFace: "Georgia"
   });
 
+  // Sarlavha qatorlar soniga qarab chiziq va tavsifni pastroqqa suramiz
+  const estLines = Math.min(estimateLines(content.title, textW, titleFontSize), 3);
+  const titleLineHeight = (titleFontSize * 1.25) / 72; // taxminiy qator balandligi (dyuym)
+  const lineY = titleY + estLines * titleLineHeight + 0.12;
+
   slide.addShape(pptx.ShapeType.rect, {
-    x: textX, y: 2.55, w: 0.7, h: 0.05,
+    x: textX, y: lineY, w: 0.7, h: 0.05,
     fill: c(colors.accent)
   });
 
   slide.addText(content.subtitle, {
-    x: textX, y: 2.9, w: textW, h: 2.0,
+    x: textX, y: lineY + 0.35, w: textW, h: 2.0,
     fontSize: 14,
     color: c(colors.text_secondary),
     align: "left", valign: "top",

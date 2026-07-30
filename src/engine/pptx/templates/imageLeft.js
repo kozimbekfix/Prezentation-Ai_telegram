@@ -1,6 +1,13 @@
 // Image Left (3-slayd) — nomiga qaramay, namunadagi "Управление империей"
 // uslubiga mos qilib rasm O'NG tomonda, matn CHAP tomonda joylashtirildi —
 // shu bilan Hero slayd (rasm chapda) bilan vizual almashinuv hosil bo'ladi.
+
+function estimateLines(text, widthIn, fontSize) {
+  if (!text) return 1;
+  const charsPerLine = Math.max(8, Math.floor((widthIn * 72) / (fontSize * 0.52)));
+  return Math.max(1, Math.ceil(text.length / charsPerLine));
+}
+
 export const buildImageLeftSlide = async (pptx, content, design, imageQuery, imageData) => {
   const slide = pptx.addSlide();
   const colors = design.color_palette;
@@ -27,21 +34,27 @@ export const buildImageLeftSlide = async (pptx, content, design, imageQuery, ima
 
   const textX = 0.6;
   const textW = imgX - textX - 0.4;
+  const titleY = 1.0;
+  const titleFontSize = 26;
 
   slide.addText(content.title, {
-    x: textX, y: 1.0, w: textW, h: 1.2,
-    fontSize: 26, bold: true,
+    x: textX, y: titleY, w: textW, h: 1.5,
+    fontSize: titleFontSize, bold: true,
     color: c(colors.text_primary),
     align: "left", valign: "top", fontFace: "Georgia"
   });
 
+  const estLines = Math.min(estimateLines(content.title, textW, titleFontSize), 3);
+  const titleLineHeight = (titleFontSize * 1.25) / 72;
+  const lineY = titleY + estLines * titleLineHeight + 0.1;
+
   slide.addShape(pptx.ShapeType.rect, {
-    x: textX, y: 2.05, w: 0.6, h: 0.045,
+    x: textX, y: lineY, w: 0.6, h: 0.045,
     fill: c(colors.accent)
   });
 
   slide.addText(content.content, {
-    x: textX, y: 2.35, w: textW, h: 3.0,
+    x: textX, y: lineY + 0.3, w: textW, h: 3.0,
     fontSize: 14,
     color: c(colors.text_secondary),
     align: "left", valign: "top", lineSpacing: 19,
