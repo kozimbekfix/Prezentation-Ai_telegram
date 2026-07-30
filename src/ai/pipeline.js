@@ -15,6 +15,30 @@ const model = genAI.getGenerativeModel({
 });
 
 export class PresentationAIPipeline {
+
+  // Gemini vaqti-vaqti bilan 503 ("model overloaded") yoki 429 ("rate limit")
+  // qaytarishi mumkin — bular VAQTINCHALIK xatolar, kod bilan bog'liq emas.
+  // Shu funksiya orqali bunday xatolarda kutib, avtomatik qayta uriniladi
+  // (foydalanuvchi qo'lda qayta yozishi shart bo'lmaydi).
+  async generateWithRetry(prompt, maxRetries = 3) {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        return await model.generateContent(prompt);
+      } catch (error) {
+        const status = error?.status || error?.response?.status;
+        const isRetryable = status === 503 || status === 429;
+        const isLastAttempt = attempt === maxRetries;
+
+        if (!isRetryable || isLastAttempt) {
+          throw error;
+        }
+
+        const delayMs = 1000 * Math.pow(2, attempt - 1); // 1s, 2s, 4s...
+        console.warn(`[Gemini Retry] ${status} xatosi, ${delayMs}ms kutib ${attempt}/${maxRetries}-urinish qayta boshlanmoqda...`);
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+  }
   
   async generateFullPresentation(topic) {
     try {
@@ -56,7 +80,7 @@ Rules:
 Return strictly as JSON matching this schema:
 ${JSON.stringify(plannerSchema.shape, null, 2)}`;
 
-    const result = await model.generateContent(prompt);
+    const result = await this.generateWithRetry(prompt);
     const parsed = JSON.parse(result.response.text());
     return plannerSchema.parse(parsed); // Zod orqali tekshirish
   }
@@ -67,67 +91,78 @@ Goal: Write presentation content based on this plan: ${JSON.stringify(plan)}
 Topic: ${topic}
 Rules:
 1. No fluff. Be highly professional.
-2. Respect character limits strictly. In particular:
-   - slide_5_four_facts.facts[].detail: MAXIMUM 60 characters, no exceptions.
-   - slide_5_four_facts.facts[].metric: MAXIMUM 10 characters (e.g. "1402", "98%").
-   - Keep every other field as short and punchy as possible.
+2. Respect character limits strictly. EVERY field below has a HARD MAXIMUM
+   character count — never exceed it:
+   - slide_1_hero.title: <=50 chars
+   - slide_1_hero.subtitle: <=120 chars
+   - slide_2_three_cards.section_title: <=40 chars
+   - slide_2_three_cards.cards[].title: <=30 chars
+   - slide_2_three_cards.cards[].text: <=100 chars
+   - slide_3_image_left.title: <=40 chars
+   - slide_3_image_left.content: <=250 chars
+   - slide_4_three_steps.section_title: <=40 chars
+   - slide_4_three_steps.steps[].title: <=30 chars
+   - slide_4_three_steps.steps[].description: <=90 chars
+   - slide_5_four_facts.section_title: <=40 chars
+   - slide_5_four_facts.facts[].metric: <=15 chars
+   - slide_5_four_facts.facts[].detail: <=60 chars
+   - slide_6_ending.title: <=40 chars
+   - slide_6_ending.call_to_action: <=80 chars
+   - slide_6_ending.contact_info: <=50 chars
 Return strictly as JSON matching this schema:
 ${JSON.stringify(contentSchema.shape, null, 2)}`;
 
-    const result = await model.generateContent(prompt);
+    const result = await this.generateWithRetry(prompt);
     const parsed = JSON.parse(result.response.text());
 
-    // Xavfsizlik to'ri: Gemini ba'zan belgi chegarasidan oshirib yuborishi
-    // mumkin. Zod validatsiyasi (contentSchema.parse) shu sababli qulab
-    // tushmasligi uchun, ma'lum bo'lgan qattiq chegarali maydonlarni
-    // validatsiyadan OLDIN xavfsiz qisqartiramiz.
+    // Xavfsizlik to'ri: Gemini promptdagi chegaralarni baribir vaqti-vaqti
+    // bilan oshirib yuborishi mumkin. Zod validatsiyasi (contentSchema.parse)
+    // shu sababli qulab tushmasligi uchun, sxemadagi (src/ai/schemas.js)
+    // BARCHA qattiq belgi chegarali maydonlarni validatsiyadan OLDIN
+    // xavfsiz qisqartiramiz. Bu ro'yxat contentSchema bilan qo'lda
+    // sinxronlashtirilgan — sxema o'zgarsa, shu yerni ham yangilang.
     this.sanitizeContentLengths(parsed);
 
     return contentSchema.parse(parsed);
   }
 
-  // Belgi chegarasi qat'iy bo'lgan maydonlarni (hozircha slide_5_four_facts)
-  // limitdan oshib ketmasligi uchun tekshirib, oshgan bo'lsa qisqartiradi.
   sanitizeContentLengths(parsed) {
     const truncate = (str, max) => {
       if (typeof str !== "string" || str.length <= max) return str;
       return str.slice(0, max - 1).trimEnd() + "…";
     };
 
-    const facts = parsed?.slide_5_four_facts?.facts;
-    if (Array.isArray(facts)) {
-      facts.forEach((fact) => {
-        if (fact && typeof fact === "object") {
-          if (fact.detail) fact.detail = truncate(fact.detail, 60);
-          if (fact.metric) fact.metric = truncate(fact.metric, 10);
-        }
-      });
-    }
-  }
+    const setIfExists = (obj, key, max) => {
+      if (obj && typeof obj === "object" && key in obj) {
+        obj[key] = truncate(obj[key], max);
+      }
+    };
 
-  async runVisual(topic, content) {
-    const prompt = `Role: Senior UI/UX Designer.
-Goal: Create a professional color palette based on this presentation content.
-Content preview: ${JSON.stringify(content.slide_1_hero)}
-Rules: Contrast must pass W3C AA standards. Returns valid HEX codes.
-Return strictly as JSON matching this schema:
-${JSON.stringify(visualSchema.shape, null, 2)}`;
+    if (!parsed || typeof parsed !== "object") return;
 
-    const result = await model.generateContent(prompt);
-    const parsed = JSON.parse(result.response.text());
-    return visualSchema.parse(parsed);
-  }
+    setIfExists(parsed.slide_1_hero, "title", 50);
+    setIfExists(parsed.slide_1_hero, "subtitle", 120);
 
-  async runImageSelector(topic, content) {
-    const prompt = `Role: Stock Photography Curator.
-Goal: Generate English search keywords for Unsplash based on presentation content.
-Topic: ${topic}
-Rules: Avoid close-up human faces. Prefer modern, minimalist, tech or business abstract imagery.
-Return strictly as JSON matching this schema:
-${JSON.stringify(imageSelectorSchema.shape, null, 2)}`;
+    setIfExists(parsed.slide_2_three_cards, "section_title", 40);
+    (parsed.slide_2_three_cards?.cards || []).forEach((card) => {
+      setIfExists(card, "title", 30);
+      setIfExists(card, "text", 100);
+    });
 
-    const result = await model.generateContent(prompt);
-    const parsed = JSON.parse(result.response.text());
-    return imageSelectorSchema.parse(parsed);
-  }
-}
+    setIfExists(parsed.slide_3_image_left, "title", 40);
+    setIfExists(parsed.slide_3_image_left, "content", 250);
+
+    setIfExists(parsed.slide_4_three_steps, "section_title", 40);
+    (parsed.slide_4_three_steps?.steps || []).forEach((step) => {
+      setIfExists(step, "title", 30);
+      setIfExists(step, "description", 90);
+    });
+
+    setIfExists(parsed.slide_5_four_facts, "section_title", 40);
+    (parsed.slide_5_four_facts?.facts || []).forEach((fact) => {
+      setIfExists(fact, "metric", 15);
+      setIfExists(fact, "detail", 60);
+    });
+
+    setIfExists(parsed.slide_6_ending, "title", 40);
+    setIfExists(parsed.slide_6_ending, "call_to_action", 80);

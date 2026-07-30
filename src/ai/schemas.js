@@ -67,7 +67,10 @@ export const visualSchema = z.object({
 });
 
 // 4. Image Selector Schema (Kalit so'zlar)
+// slide_6_ending_image_query qo'shildi — shu bilan yakuniy (Ending) slaydi
+// ham mavzuga mos rasm oladi, avvalgidek doim standart fallback emas.
 export const imageSelectorSchema = z.object({
   slide_1_hero_image_query: z.string(),
-  slide_3_left_image_query: z.string()
+  slide_3_left_image_query: z.string(),
+  slide_6_ending_image_query: z.string()
 });
