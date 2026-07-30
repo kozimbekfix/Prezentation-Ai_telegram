@@ -3,10 +3,11 @@ import { Queue, Worker } from 'bullmq';
 import Redis from 'ioredis';
 import express from 'express';
 import dotenv from 'dotenv';
-import fs from 'fs';
 
 import { PresentationAIPipeline } from './ai/pipeline.js';
 import { PresentationEngine } from './engine/pptx/index.js';
+import { convertToPdf, cleanupTempFiles } from './engine/pdfEngine.js';
+import os from 'os';
 
 dotenv.config();
 
@@ -27,6 +28,7 @@ const worker = new Worker('presentation-queue', async (job) => {
   const { chatId, prompt } = job.data;
   const uniqueId = `${Date.now()}_${Math.random().toString(36).substring(7)}`;
   let pptxPath = null;
+  let pdfPath = null;
 
   try {
     await bot.telegram.sendMessage(chatId, "✨ AI mavzu ustida ishlayapti va ma'lumotlarni to'playapti...");
@@ -43,20 +45,39 @@ const worker = new Worker('presentation-queue', async (job) => {
     const engine = new PresentationEngine();
     pptxPath = await engine.createPresentation(aiResult.data, uniqueId);
 
+    const safeName = prompt.substring(0, 20).replace(/\s+/g, '_');
+
     await bot.telegram.sendDocument(chatId, {
       source: pptxPath,
-      filename: `${prompt.substring(0, 20).replace(/\s+/g, '_')}_presentation.pptx`
+      filename: `${safeName}_presentation.pptx`
     }, {
       caption: "✅ Mana sizning professional taqdimotingiz tayyor!"
     });
+
+    // PDF versiyasini ham yasashga harakat qilamiz. Bu qadam ixtiyoriy —
+    // agar LibreOffice biror sababdan ishlamasa (masalan konteynerda
+    // topilmasa yoki 15s timeout'ga uchrasa), foydalanuvchi baribir
+    // yuqoridagi .pptx faylni allaqachon olgan bo'ladi, shuning uchun
+    // xatoni yutib, faqat log qoldiramiz — jarayonni to'xtatmaymiz.
+    try {
+      await bot.telegram.sendMessage(chatId, "📄 PDF versiyasi tayyorlanmoqda...");
+      pdfPath = await convertToPdf(pptxPath, os.tmpdir());
+      await bot.telegram.sendDocument(chatId, {
+        source: pdfPath,
+        filename: `${safeName}_presentation.pdf`
+      }, {
+        caption: "📄 PDF versiyasi ham tayyor!"
+      });
+    } catch (pdfError) {
+      console.error("[PDF Export Warning]", pdfError.message);
+      // PDF muvaffaqiyatsiz bo'lsa ham botni qulatmaymiz — pptx allaqachon yuborilgan.
+    }
 
   } catch (error) {
     console.error("[Worker Error]", error);
     await bot.telegram.sendMessage(chatId, `❌ Xatolik yuz berdi: ${error.message}`);
   } finally {
-    if (pptxPath && fs.existsSync(pptxPath)) {
-      try { fs.unlinkSync(pptxPath); } catch (e) {}
-    }
+    await cleanupTempFiles([pptxPath, pdfPath]);
   }
 }, { connection });
 

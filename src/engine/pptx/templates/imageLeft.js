@@ -1,37 +1,50 @@
-export const buildImageLeftSlide = async (pptx, content, design, imageQuery) => {
+// Image Left (3-slayd) — nomiga qaramay, namunadagi "Управление империей"
+// uslubiga mos qilib rasm O'NG tomonda, matn CHAP tomonda joylashtirildi —
+// shu bilan Hero slayd (rasm chapda) bilan vizual almashinuv hosil bo'ladi.
+export const buildImageLeftSlide = async (pptx, content, design, imageQuery, imageData) => {
   const slide = pptx.addSlide();
   const colors = design.color_palette;
+  const c = (hex) => (hex || "").replace('#', '');
 
-  slide.background = { fill: colors.background.replace('#', '') };
+  slide.background = { fill: c(colors.background) };
 
-  // Chap tomondagi rasm uchun joy (Placeholder yoki Unsplash URL)
-  // Eslatma: Image Engine keyinchalik bu yerga real rasm yuklaydi
-  slide.addShape(pptx.ShapeType.rect, {
-    x: 0.8, y: 1.2, w: 4.2, h: 4.5,
-    fill: colors.card_background.replace('#', ''),
-    line: { color: colors.secondary.replace('#', ''), width: 1 }
-  });
+  const imgW = 4.35;
+  const imgX = 10 - imgW;
 
-  slide.addText(`[Rasm: ${imageQuery}]`, {
-    x: 1.0, y: 3.0, w: 3.8, h: 1.0,
-    fontSize: 12, color: colors.text_secondary.replace('#', ''),
-    align: "center"
-  });
+  if (imageData) {
+    slide.addImage({ data: imageData, x: imgX, y: 0, w: imgW, h: 5.63, sizing: { type: "cover", w: imgW, h: 5.63 } });
+  } else {
+    slide.addShape(pptx.ShapeType.rect, {
+      x: imgX, y: 0, w: imgW, h: 5.63,
+      fill: c(colors.secondary)
+    });
+    slide.addText((imageQuery || content.title || "").toUpperCase(), {
+      x: imgX + 0.3, y: 2.4, w: imgW - 0.6, h: 1.0,
+      fontSize: 13, color: c(colors.background), align: "center",
+      valign: "middle", fontFace: "Arial", italic: true
+    });
+  }
 
-  // O'ng tomondagi sarlavha
+  const textX = 0.6;
+  const textW = imgX - textX - 0.4;
+
   slide.addText(content.title, {
-    x: 5.4, y: 1.2, w: 3.8, h: 1.0,
+    x: textX, y: 1.0, w: textW, h: 1.2,
     fontSize: 26, bold: true,
-    color: colors.text_primary.replace('#', ''),
-    align: "left"
+    color: c(colors.text_primary),
+    align: "left", valign: "top", fontFace: "Georgia"
   });
 
-  // O'ng tomondagi asosiy matn
+  slide.addShape(pptx.ShapeType.rect, {
+    x: textX, y: 2.05, w: 0.6, h: 0.045,
+    fill: c(colors.accent)
+  });
+
   slide.addText(content.content, {
-    x: 5.4, y: 2.4, w: 3.8, h: 3.0,
-    fontSize: 15,
-    color: colors.text_secondary.replace('#', ''),
-    align: "left",
-    valign: "top"
+    x: textX, y: 2.35, w: textW, h: 3.0,
+    fontSize: 14,
+    color: c(colors.text_secondary),
+    align: "left", valign: "top", lineSpacing: 19,
+    fontFace: "Arial"
   });
 };

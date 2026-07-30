@@ -5,9 +5,12 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-// Biz doim eng so'nggi va tezkor modelni ishlatamiz
+// Biz doim eng so'nggi va tezkor modelni ishlatamiz.
+// "gemini-1.5-pro" Google tomonidan o'chirilgan (404 qaytaradi), shuning uchun
+// GEMINI_MODEL env-o'zgaruvchisidan olamiz, u bo'lmasa "gemini-flash-latest"
+// alias'iga tushamiz — bu Google'ning doim ishlaydigan eng so'nggi flash modeliga yo'naltiradi.
 const model = genAI.getGenerativeModel({ 
-  model: "gemini-flash-latest",
+  model: process.env.GEMINI_MODEL || "gemini-flash-latest",
   generationConfig: { responseMimeType: "application/json" }
 });
 
@@ -64,13 +67,42 @@ Goal: Write presentation content based on this plan: ${JSON.stringify(plan)}
 Topic: ${topic}
 Rules:
 1. No fluff. Be highly professional.
-2. Respect character limits strictly.
+2. Respect character limits strictly. In particular:
+   - slide_5_four_facts.facts[].detail: MAXIMUM 60 characters, no exceptions.
+   - slide_5_four_facts.facts[].metric: MAXIMUM 10 characters (e.g. "1402", "98%").
+   - Keep every other field as short and punchy as possible.
 Return strictly as JSON matching this schema:
 ${JSON.stringify(contentSchema.shape, null, 2)}`;
 
     const result = await model.generateContent(prompt);
     const parsed = JSON.parse(result.response.text());
+
+    // Xavfsizlik to'ri: Gemini ba'zan belgi chegarasidan oshirib yuborishi
+    // mumkin. Zod validatsiyasi (contentSchema.parse) shu sababli qulab
+    // tushmasligi uchun, ma'lum bo'lgan qattiq chegarali maydonlarni
+    // validatsiyadan OLDIN xavfsiz qisqartiramiz.
+    this.sanitizeContentLengths(parsed);
+
     return contentSchema.parse(parsed);
+  }
+
+  // Belgi chegarasi qat'iy bo'lgan maydonlarni (hozircha slide_5_four_facts)
+  // limitdan oshib ketmasligi uchun tekshirib, oshgan bo'lsa qisqartiradi.
+  sanitizeContentLengths(parsed) {
+    const truncate = (str, max) => {
+      if (typeof str !== "string" || str.length <= max) return str;
+      return str.slice(0, max - 1).trimEnd() + "…";
+    };
+
+    const facts = parsed?.slide_5_four_facts?.facts;
+    if (Array.isArray(facts)) {
+      facts.forEach((fact) => {
+        if (fact && typeof fact === "object") {
+          if (fact.detail) fact.detail = truncate(fact.detail, 60);
+          if (fact.metric) fact.metric = truncate(fact.metric, 10);
+        }
+      });
+    }
   }
 
   async runVisual(topic, content) {
