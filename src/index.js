@@ -27,6 +27,27 @@ const presentationQueue = new Queue('presentation-queue', { connection });
 // tozalanadi. type: "presentation" | "referat", pages faqat referat uchun.
 const pendingSessions = new Map();
 
+// Xatoning texnik tafsilotlarini konsolga yozamiz (debug uchun), lekin
+// foydalanuvchiga har doim tushunarli, sodda xabar ko'rsatamiz — u
+// "status: 429" yoki stack trace kabi narsalarni ko'rishi shart emas.
+function friendlyErrorMessage(error) {
+  const status = error?.status || error?.response?.status;
+
+  if (status === 429 || status === 503) {
+    return (
+      '⏳ Serverda vaqtinchalik yuklama yuzaga keldi.\n' +
+      'Iltimos, 1 daqiqadan keyin qayta urinib ko\'ring — bu vaqt ichida ' +
+      'tizim avtomatik tiklanadi, hech narsa qo\'lda o\'zgartirish shart emas.'
+    );
+  }
+
+  return (
+    '❌ Serverda kutilmagan xatolik yuz berdi.\n' +
+    'Iltimos, 1 daqiqadan keyin qayta urinib ko\'ring. Muammo davom etsa, ' +
+    'boshqa mavzu bilan sinab ko\'ring.'
+  );
+}
+
 // --- WORKER QISMI (Navbatdagi vazifalarni bajaruvchi) ---
 console.log("[Worker] Background worker ishga tushdi va navbatni kutmoqda...");
 
@@ -88,9 +109,11 @@ async function processPresentationJob({ chatId, prompt, language }) {
       // PDF muvaffaqiyatsiz bo'lsa ham botni qulatmaymiz — pptx allaqachon yuborilgan.
     }
 
+    await bot.telegram.sendMessage(chatId, 'Yana biror narsa kerakmi?', MODE_KEYBOARD);
+
   } catch (error) {
     console.error("[Worker Error]", error);
-    await bot.telegram.sendMessage(chatId, `❌ Xatolik yuz berdi: ${error.message}`);
+    await bot.telegram.sendMessage(chatId, friendlyErrorMessage(error), MODE_KEYBOARD);
   } finally {
     await cleanupTempFiles([pptxPath, pdfPath]);
   }
@@ -139,9 +162,11 @@ async function processReferatJob({ chatId, prompt, language, pages }) {
       console.error("[PDF Export Warning]", pdfError.message);
     }
 
+    await bot.telegram.sendMessage(chatId, 'Yana biror narsa kerakmi?', MODE_KEYBOARD);
+
   } catch (error) {
     console.error("[Worker Error/Referat]", error);
-    await bot.telegram.sendMessage(chatId, `❌ Xatolik yuz berdi: ${error.message}`);
+    await bot.telegram.sendMessage(chatId, friendlyErrorMessage(error), MODE_KEYBOARD);
   } finally {
     await cleanupTempFiles([docxPath, pdfPath]);
   }
@@ -152,21 +177,73 @@ worker.on('failed', (job, err) => {
 });
 // ----------------------------------------------------
 
+// Doimiy pastki klaviatura — har doim ekranning pastida turadi, foydalanuvchi
+// har safar qayta so'ralmasdan turini tanlab qo'ya oladi.
+const MODE_KEYBOARD = Markup.keyboard([
+  ['📊 Prezentatsiya', '📄 Referat'],
+]).resize();
+
+const PRESENTATION_LABEL = '📊 Prezentatsiya';
+const REFERAT_LABEL = '📄 Referat';
+
 // /start komandasi
 bot.start((ctx) => {
-  ctx.reply("Assalomu alaykum! Prezo-AI botiga xush kelibsiz. Menga istalgan mavzuni yuboring — men sizga 6 ta slayddan iborat professional PowerPoint taqdimot yoki 1-5 betlik referat (Word/PDF) tayyorlab beraman.");
+  ctx.reply(
+    "Salom! 👋 Men Prezo-AI botiman.\n\n" +
+    "Sizga bir necha soniyada tayyor material yasab beraman:\n" +
+    "📊 *Prezentatsiya* — 6 ta professional slaydli PowerPoint (.pptx va .pdf)\n" +
+    "📄 *Referat* — 1–5 betlik tayyor matn (Word va PDF)\n\n" +
+    "Pastdagi tugmalardan birini tanlang, so'ng mavzuni yozing.",
+    { parse_mode: 'Markdown', ...MODE_KEYBOARD }
+  );
 });
 
-// Har qanday matnli xabarni mavzu sifatida qabul qilamiz -> avval hujjat
-// turini (prezentatsiya yoki referat) so'raymiz.
+// Doimiy klaviatura tugmalari bosilganda — turini eslab qolamiz va
+// mavzuni yozishni so'raymiz (qo'shimcha savol-javobsiz).
+bot.hears(PRESENTATION_LABEL, async (ctx) => {
+  const userId = ctx.from.id;
+  pendingSessions.set(userId, { ...(pendingSessions.get(userId) || {}), type: 'presentation' });
+  await ctx.reply('📊 Prezentatsiya tanlandi. Endi mavzuni yozing:');
+});
+
+bot.hears(REFERAT_LABEL, async (ctx) => {
+  const userId = ctx.from.id;
+  pendingSessions.set(userId, { ...(pendingSessions.get(userId) || {}), type: 'referat' });
+  await ctx.reply('📄 Referat tanlandi. Endi mavzuni yozing:');
+});
+
+// Har qanday matnli xabarni mavzu sifatida qabul qilamiz. Agar tur
+// (prezentatsiya/referat) doimiy tugma orqali oldindan tanlangan bo'lsa,
+// qo'shimcha savolsiz to'g'ridan-to'g'ri keyingi qadamga o'tamiz.
 bot.on('text', async (ctx) => {
   const prompt = ctx.message.text;
   const userId = ctx.from.id;
 
   if (prompt.startsWith('/')) return;
+  if (prompt === PRESENTATION_LABEL || prompt === REFERAT_LABEL) return; // yuqorida bot.hears orqali ishlangan
 
-  pendingSessions.set(userId, { prompt });
+  const existing = pendingSessions.get(userId);
+  const preselectedType = existing?.type;
 
+  pendingSessions.set(userId, { prompt, type: preselectedType });
+
+  if (preselectedType === 'referat') {
+    await ctx.reply(
+      `Mavzu: "${prompt}"\nTur: Referat 📄\n\nNecha bet hajmida bo'lsin?`,
+      Markup.inlineKeyboard([
+        [1, 2, 3, 4, 5].map((n) => Markup.button.callback(`${n}`, `pages_${n}`)),
+      ])
+    );
+    return;
+  }
+
+  if (preselectedType === 'presentation') {
+    await ctx.reply(`Mavzu: "${prompt}"\nTur: Prezentatsiya 📊`);
+    await askLanguage(ctx);
+    return;
+  }
+
+  // Tur tanlanmagan bo'lsa — avvalgidek so'raymiz.
   await ctx.reply(
     `Mavzu: "${prompt}"\n\nNimani tayyorlaymiz?`,
     Markup.inlineKeyboard([

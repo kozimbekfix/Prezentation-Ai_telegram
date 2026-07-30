@@ -1,45 +1,152 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { plannerSchema, contentSchema, visualSchema, imageSelectorSchema, referatSchema } from "./schemas.js";
 import dotenv from "dotenv";
+import axios from "axios";
 
 dotenv.config();
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-// Biz doim eng so'nggi va tezkor modelni ishlatamiz.
-// "gemini-1.5-pro" Google tomonidan o'chirilgan (404 qaytaradi), shuning uchun
-// GEMINI_MODEL env-o'zgaruvchisidan olamiz, u bo'lmasa "gemini-flash-latest"
-// alias'iga tushamiz — bu Google'ning doim ishlaydigan eng so'nggi flash modeliga yo'naltiradi.
-const model = genAI.getGenerativeModel({
-  model: process.env.GEMINI_MODEL || "gemini-flash-latest",
-  generationConfig: {
-    responseMimeType: "application/json"
-  }
-});
+// --- KO'P KALITLI GEMINI HAVUZI (round-robin) ---
+// Google'ning bepul tarif limiti API KALITIGA emas, balki LOYIHAGA (Google
+// Cloud project) bog'liq. Shuning uchun bitta loyihada bir nechta kalit
+// yaratish foyda bermaydi — har biri MUSTAQIL loyihada bo'lishi shart.
+// Bunday kalitlar GEMINI_API_KEYS o'zgaruvchisida vergul bilan ajratib
+// yoziladi:
+//   GEMINI_API_KEYS=kalit1,kalit2,kalit3,kalit4
+// Orqaga moslik uchun eski GEMINI_API_KEY (bitta kalit) ham hali ishlaydi.
+const GEMINI_MODEL_NAME = process.env.GEMINI_MODEL || "gemini-flash-latest";
+
+const geminiKeys = (process.env.GEMINI_API_KEYS || process.env.GEMINI_API_KEY || "")
+  .split(",")
+  .map((k) => k.trim())
+  .filter(Boolean);
+
+if (geminiKeys.length === 0) {
+  console.error("[Pipeline] Ogohlantirish: GEMINI_API_KEY yoki GEMINI_API_KEYS .env'da topilmadi!");
+}
+
+// Har bir kalit uchun alohida model instansi tayyorlaymiz.
+const geminiModels = geminiKeys.map((key) =>
+  new GoogleGenerativeAI(key).getGenerativeModel({
+    model: GEMINI_MODEL_NAME,
+    generationConfig: { responseMimeType: "application/json" },
+  })
+);
+
+// Har bir kalit uchun "bu vaqtgacha band/limitda" belgisi (millisekund,
+// Date.now() bilan solishtiriladi). Kalit 429/503 bersa, shu kalit 1
+// daqiqaga chetlashtiriladi va navbat KEYINGI kalitga o'tadi.
+const KEY_COOLDOWN_MS = 60_000; // 1 daqiqa
+const keyCooldownUntil = new Array(geminiKeys.length).fill(0);
+
+// Round-robin boshlanish nuqtasi — har chaqiruvda keyingi kalitdan
+// boshlanadi, shunda yuklama barcha kalitlar orasida teng taqsimlanadi
+// (doim bitta kalit "urib" qolmaydi).
+let nextKeyIndex = 0;
+
+function isKeyOnCooldown(idx) {
+  return Date.now() < keyCooldownUntil[idx];
+}
+
+function markKeyOnCooldown(idx, reason) {
+  keyCooldownUntil[idx] = Date.now() + KEY_COOLDOWN_MS;
+  console.warn(
+    `[AI Pool] Gemini kalit #${idx + 1}/${geminiKeys.length} ${reason} sababli ` +
+    `1 daqiqaga chetlashtirildi. Navbat keyingi kalitga o'tmoqda...`
+  );
+}
+
+// --- ZAXIRA (FALLBACK) AI: OpenRouter ---
+// Barcha Gemini kalitlari bir vaqtning o'zida limitga uchrasa (bir nechta
+// kalit bo'lsa juda kam uchraydigan holat), OPENROUTER_API_KEY sozlangan
+// bo'lsa, so'rov shu yerga yo'naltiriladi. Bepul model ro'yxati o'zgarib
+// turadi — standart model ishlamay qolsa, https://openrouter.ai/models?max_price=0
+// dan boshqasini tanlab OPENROUTER_MODEL'ga yozing.
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "deepseek/deepseek-chat:free";
+
+async function callOpenRouterFallback(prompt) {
+  const response = await axios.post(
+    "https://openrouter.ai/api/v1/chat/completions",
+    {
+      model: OPENROUTER_MODEL,
+      messages: [
+        {
+          role: "system",
+          content: "You return ONLY strictly valid JSON. No markdown, no code fences, no explanations — just the raw JSON object.",
+        },
+        { role: "user", content: prompt },
+      ],
+      response_format: { type: "json_object" },
+      temperature: 0.7,
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      timeout: 60_000,
+    }
+  );
+
+  let text = response.data?.choices?.[0]?.message?.content || "";
+  // Ba'zi bepul modellar ko'rsatmaga qaramay ```json qobig'ini qo'shib
+  // yuborishi mumkin — shuni tozalaymiz.
+  text = text.replace(/```json\s*/gi, "").replace(/```/g, "").trim();
+
+  // Chaqiruvchi kod har doim `result.response.text()` shaklida foydalanadi
+  // (Gemini SDK'ning javob formatiga o'xshatib) — shu bilan pipeline'ning
+  // qolgan qismini o'zgartirmasdan barcha provayderlarni bir xil interfeys
+  // orqali ishlatishimiz mumkin.
+  return { response: { text: () => text } };
+}
 
 export class PresentationAIPipeline {
 
-  // Gemini vaqti-vaqti bilan 503 ("model overloaded") yoki 429 ("rate limit")
-  // qaytarishi mumkin — bular VAQTINCHALIK xatolar, kod bilan bog'liq emas.
-  // Shu funksiya orqali bunday xatolarda kutib, avtomatik qayta uriniladi
-  // (foydalanuvchi qo'lda qayta yozishi shart bo'lmaydi).
-  async generateWithRetry(prompt, maxRetries = 3) {
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+  // Avval mavjud Gemini kalitlarini round-robin tartibida sinab ko'radi
+  // (har biri band/limitda bo'lsa — keyingisiga o'tadi). Barcha kalitlar
+  // tugagandan keyingina OpenRouter zaxira provayderga murojaat qiladi.
+  async generateWithRetry(prompt) {
+    if (geminiKeys.length === 0 && process.env.OPENROUTER_API_KEY) {
+      return await callOpenRouterFallback(prompt);
+    }
+
+    const startIndex = nextKeyIndex;
+    let lastError = null;
+
+    for (let i = 0; i < geminiKeys.length; i++) {
+      const idx = (startIndex + i) % geminiKeys.length;
+
+      if (isKeyOnCooldown(idx)) continue;
+
       try {
-        return await model.generateContent(prompt);
+        const result = await geminiModels[idx].generateContent(prompt);
+        // Keyingi chaqiruv navbatdagi kalitdan boshlansin — yuklama teng taqsimlanadi.
+        nextKeyIndex = (idx + 1) % geminiKeys.length;
+        return result;
       } catch (error) {
         const status = error?.status || error?.response?.status;
         const isRetryable = status === 503 || status === 429;
-        const isLastAttempt = attempt === maxRetries;
+        lastError = error;
 
-        if (!isRetryable || isLastAttempt) {
-          throw error;
+        if (isRetryable) {
+          markKeyOnCooldown(idx, status === 429 ? "429 (limit/kvota)" : "503 (band)");
+          continue; // keyingi kalitni sinaymiz
         }
 
-        const delayMs = 1000 * Math.pow(2, attempt - 1); // 1s, 2s, 4s...
-        console.warn(`[Gemini Retry] ${status} xatosi, ${delayMs}ms kutib ${attempt}/${maxRetries}-urinish qayta boshlanmoqda...`);
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        throw error; // limit bilan bog'liq bo'lmagan xato — darhol tashlaymiz
       }
     }
+
+    // Barcha kalitlar band/limitda ekan — zaxira provayderga o'tamiz.
+    if (process.env.OPENROUTER_API_KEY) {
+      console.warn(`[AI Pool] Barcha ${geminiKeys.length} ta Gemini kalit band. OpenRouter (${OPENROUTER_MODEL}) ishlatilmoqda...`);
+      try {
+        return await callOpenRouterFallback(prompt);
+      } catch (fallbackError) {
+        console.error("[AI Fallback] OpenRouter ham muvaffaqiyatsiz bo'ldi:", fallbackError.message);
+      }
+    }
+
+    throw lastError || new Error("Barcha AI provayderlar mavjud emas.");
   }
   
   // Til kodini AI uchun tushunarli to'liq nomga o'giramiz.
