@@ -166,3 +166,42 @@ ${JSON.stringify(contentSchema.shape, null, 2)}`;
 
     setIfExists(parsed.slide_6_ending, "title", 40);
     setIfExists(parsed.slide_6_ending, "call_to_action", 80);
+    setIfExists(parsed.slide_6_ending, "contact_info", 50);
+  }
+
+  async runVisual(topic, content) {
+    const prompt = `Role: Senior Presentation Designer.
+Goal: Choose a cohesive color palette and theme mode for a presentation on: "${topic}".
+Content overview: ${JSON.stringify(content)}
+Rules:
+1. Pick either a "dark" or "light" theme_mode that best fits the topic's mood.
+2. All colors must be valid hex codes (e.g. "#1F2937").
+3. Ensure strong contrast between background/card_background and text_primary/text_secondary
+   so the text stays readable.
+4. accent should stand out clearly against background and card_background.
+Return strictly as JSON matching this schema:
+${JSON.stringify(visualSchema.shape, null, 2)}`;
+
+    const result = await this.generateWithRetry(prompt);
+    const parsed = JSON.parse(result.response.text());
+    return visualSchema.parse(parsed);
+  }
+
+  async runImageSelector(topic, content) {
+    const prompt = `Role: Visual Research Assistant.
+Goal: Suggest short, specific stock-photo search queries (in English, for best
+image-search results) for 3 slides of a presentation on: "${topic}".
+Content overview: ${JSON.stringify(content)}
+Rules:
+1. Each query should be 2-5 words, concrete and visual (not abstract concepts).
+2. slide_1_hero_image_query: a striking, wide, topic-representative image.
+3. slide_3_left_image_query: an image illustrating the specific point made in slide_3_image_left.
+4. slide_6_ending_image_query: a fitting closing/summary image for the topic.
+Return strictly as JSON matching this schema:
+${JSON.stringify(imageSelectorSchema.shape, null, 2)}`;
+
+    const result = await this.generateWithRetry(prompt);
+    const parsed = JSON.parse(result.response.text());
+    return imageSelectorSchema.parse(parsed);
+  }
+}
