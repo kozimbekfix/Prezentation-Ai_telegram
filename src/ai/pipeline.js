@@ -10,7 +10,7 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 // GEMINI_MODEL env-o'zgaruvchisidan olamiz, u bo'lmasa "gemini-flash-latest"
 // alias'iga tushamiz — bu Google'ning doim ishlaydigan eng so'nggi flash modeliga yo'naltiradi.
 const model = genAI.getGenerativeModel({
-  model: "gemini-2.5-flash",
+  model: process.env.GEMINI_MODEL || "gemini-flash-latest",
   generationConfig: {
     responseMimeType: "application/json"
   }
