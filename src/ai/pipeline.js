@@ -9,9 +9,11 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 // "gemini-1.5-pro" Google tomonidan o'chirilgan (404 qaytaradi), shuning uchun
 // GEMINI_MODEL env-o'zgaruvchisidan olamiz, u bo'lmasa "gemini-flash-latest"
 // alias'iga tushamiz — bu Google'ning doim ishlaydigan eng so'nggi flash modeliga yo'naltiradi.
-const model = genAI.getGenerativeModel({ 
-  model: process.env.GEMINI_MODEL || "gemini-flash-latest",
-  generationConfig: { responseMimeType: "application/json" }
+const model = genAI.getGenerativeModel({
+  model: "gemini-2.5-flash",
+  generationConfig: {
+    responseMimeType: "application/json"
+  }
 });
 
 export class PresentationAIPipeline {
