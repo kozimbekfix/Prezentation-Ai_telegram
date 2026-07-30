@@ -73,3 +73,18 @@ export const imageSelectorSchema = z.object({
   slide_3_left_image_query: z.string(),
   slide_6_ending_image_query: z.string()
 });
+
+// 5. Referat (insho/report) Schema — erkin oqim matn, slaydlardagidek
+// qat'iy belgi chegarasi yo'q, chunki bu akademik uslubdagi uzun matn.
+// Bo'limlar soni sahifalar soniga qarab pipeline.js'da dinamik hisoblanadi.
+export const referatSchema = z.object({
+  title: z.string().max(200),
+  introduction: z.string(),
+  sections: z.array(z.object({
+    heading: z.string().max(150),
+    content: z.string()
+  })).min(2).max(6),
+  conclusion: z.string(),
+  // Foydalanilgan adabiyotlar ro'yxati — har biri alohida qator sifatida
+  references: z.array(z.string()).min(3).max(12)
+});

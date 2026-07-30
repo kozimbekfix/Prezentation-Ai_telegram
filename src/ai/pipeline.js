@@ -1,5 +1,5 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { plannerSchema, contentSchema, visualSchema, imageSelectorSchema } from "./schemas.js";
+import { plannerSchema, contentSchema, visualSchema, imageSelectorSchema, referatSchema } from "./schemas.js";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -79,6 +79,61 @@ export class PresentationAIPipeline {
       console.error("[Pipeline Error]", error);
       return { isSuccess: false, error: error.message };
     }
+  }
+
+  // Har bir A4 bet ~ taxminan 280-320 so'zga to'g'ri keladi (12pt,
+  // 1.5 interval, standart chegaralar bilan). Shu asosda AI'ga necha
+  // so'zlik matn yozish kerakligini aniq ko'rsatamiz — aks holda AI
+  // ba'zan juda qisqa yoki juda uzun matn yozib, sahifalar soni
+  // so'ralganidan farq qilib ketishi mumkin.
+  static WORDS_PER_PAGE = 300;
+
+  async generateReferat(topic, language = "ru", pages = 3) {
+    const languageName = PresentationAIPipeline.LANGUAGE_NAMES[language] || PresentationAIPipeline.LANGUAGE_NAMES.ru;
+    const safePages = Math.min(Math.max(parseInt(pages, 10) || 3, 1), 5);
+
+    try {
+      console.log(`[Pipeline/Referat] Referat AI ishga tushdi... (${safePages} bet, til: ${languageName})`);
+      const content = await this.runReferatWriter(topic, languageName, safePages);
+      return { isSuccess: true, data: { content, pages: safePages } };
+    } catch (error) {
+      console.error("[Pipeline/Referat Error]", error);
+      return { isSuccess: false, error: error.message };
+    }
+  }
+
+  async runReferatWriter(topic, languageName, pages) {
+    // Sahifa soniga qarab bo'limlar sonini moslashtiramiz: juda qisqa
+    // referatda (1 bet) 2 ta bo'lim yetarli, kattasida (5 bet) 4-5 ta.
+    const sectionCount = pages <= 2 ? 2 : pages <= 3 ? 3 : pages <= 4 ? 4 : 5;
+    const targetWords = pages * PresentationAIPipeline.WORDS_PER_PAGE;
+
+    const prompt = `Role: Senior Academic Writer.
+Goal: Write a formal referat (academic report/essay) on the topic: "${topic}".
+Rules:
+1. Write strictly in ${languageName}.
+2. Structure: a title, an introduction (kirish), exactly ${sectionCount} main body
+   sections (asosiy qism) each with its own heading, a conclusion (xulosa), and
+   a list of references (foydalanilgan adabiyotlar).
+3. Target TOTAL length across introduction + all sections + conclusion is
+   approximately ${targetWords} words (this corresponds to about ${pages} A4
+   page(s) of formatted text) — distribute this length across the sections
+   proportionally. Do not pad with repetition to hit the count; write dense,
+   substantive academic content.
+4. Tone: formal, academic, objective, well-organized, no fluff, no invented
+   statistics or fabricated study results.
+5. Do not mention AI, ChatGPT, or how this text was generated anywhere.
+6. references: provide 3-8 plausible, topic-relevant reference entries in a
+   standard bibliographic style (author/organization, title, year where
+   applicable). If exact real sources are uncertain, use general authoritative
+   source types (e.g. official statistics agencies, well-known textbooks on
+   the subject) rather than inventing suspiciously specific fake citations.
+Return strictly as JSON matching this schema:
+${JSON.stringify(referatSchema.shape, null, 2)}`;
+
+    const result = await this.generateWithRetry(prompt);
+    const parsed = JSON.parse(result.response.text());
+    return referatSchema.parse(parsed);
   }
 
   async runPlanner(topic, languageName) {

@@ -6,6 +6,7 @@ import dotenv from 'dotenv';
 
 import { PresentationAIPipeline } from './ai/pipeline.js';
 import { PresentationEngine } from './engine/pptx/index.js';
+import { ReferatEngine } from './engine/docx/referatEngine.js';
 import { convertToPdf, cleanupTempFiles } from './engine/pdfEngine.js';
 import os from 'os';
 
@@ -21,15 +22,25 @@ const connection = new Redis(redisUrl, { maxRetriesPerRequest: null });
 // BullMQ navbatini yaratamiz
 const presentationQueue = new Queue('presentation-queue', { connection });
 
-// Til tanlanishini kutayotgan mavzular: userId -> mavzu matni.
-// Foydalanuvchi mavzuni yozgach, tilni tanlagunicha shu yerda saqlanadi.
-const pendingTopics = new Map();
+// Foydalanuvchining joriy so'rov holati: userId -> { prompt, type, pages }.
+// Mavzu yozilgach to'ldirila boshlaydi, til tanlangach navbatga qo'shilib
+// tozalanadi. type: "presentation" | "referat", pages faqat referat uchun.
+const pendingSessions = new Map();
 
 // --- WORKER QISMI (Navbatdagi vazifalarni bajaruvchi) ---
 console.log("[Worker] Background worker ishga tushdi va navbatni kutmoqda...");
 
 const worker = new Worker('presentation-queue', async (job) => {
-  const { chatId, prompt, language } = job.data;
+  const { chatId, prompt, language, type, pages } = job.data;
+
+  if (type === 'referat') {
+    await processReferatJob({ chatId, prompt, language, pages });
+  } else {
+    await processPresentationJob({ chatId, prompt, language });
+  }
+}, { connection });
+
+async function processPresentationJob({ chatId, prompt, language }) {
   const uniqueId = `${Date.now()}_${Math.random().toString(36).substring(7)}`;
   let pptxPath = null;
   let pdfPath = null;
@@ -83,7 +94,58 @@ const worker = new Worker('presentation-queue', async (job) => {
   } finally {
     await cleanupTempFiles([pptxPath, pdfPath]);
   }
-}, { connection });
+}
+
+async function processReferatJob({ chatId, prompt, language, pages }) {
+  const uniqueId = `${Date.now()}_${Math.random().toString(36).substring(7)}`;
+  let docxPath = null;
+  let pdfPath = null;
+
+  try {
+    await bot.telegram.sendMessage(chatId, "✨ AI mavzu bo'yicha referat matnini yozib chiqmoqda...");
+
+    const pipeline = new PresentationAIPipeline();
+    const aiResult = await pipeline.generateReferat(prompt, language, pages);
+
+    if (!aiResult.isSuccess) {
+      throw new Error(aiResult.error);
+    }
+
+    await bot.telegram.sendMessage(chatId, "📝 Matn Word (.docx) faylga formatlanmoqda...");
+
+    const engine = new ReferatEngine();
+    docxPath = await engine.createReferat(aiResult.data.content, language, uniqueId);
+
+    const safeName = prompt.substring(0, 20).replace(/\s+/g, '_');
+
+    await bot.telegram.sendDocument(chatId, {
+      source: docxPath,
+      filename: `${safeName}_referat.docx`
+    }, {
+      caption: `✅ Referatingiz tayyor! (~${pages} bet)`
+    });
+
+    // PDF versiyasi ham ixtiyoriy — muvaffaqiyatsiz bo'lsa docx baribir yuborilgan.
+    try {
+      await bot.telegram.sendMessage(chatId, "📄 PDF versiyasi tayyorlanmoqda...");
+      pdfPath = await convertToPdf(docxPath, os.tmpdir());
+      await bot.telegram.sendDocument(chatId, {
+        source: pdfPath,
+        filename: `${safeName}_referat.pdf`
+      }, {
+        caption: "📄 PDF versiyasi ham tayyor!"
+      });
+    } catch (pdfError) {
+      console.error("[PDF Export Warning]", pdfError.message);
+    }
+
+  } catch (error) {
+    console.error("[Worker Error/Referat]", error);
+    await bot.telegram.sendMessage(chatId, `❌ Xatolik yuz berdi: ${error.message}`);
+  } finally {
+    await cleanupTempFiles([docxPath, pdfPath]);
+  }
+}
 
 worker.on('failed', (job, err) => {
   console.error(`[Job Failed] ID: ${job.id}, Error:`, err);
@@ -92,20 +154,86 @@ worker.on('failed', (job, err) => {
 
 // /start komandasi
 bot.start((ctx) => {
-  ctx.reply("Assalomu alaykum! Prezo-AI botiga xush kelibsiz. Menga istalgan mavzuni yuboring, men sizga 6 ta slayddan iborat professional PowerPoint taqdimot tayyorlab beraman.");
+  ctx.reply("Assalomu alaykum! Prezo-AI botiga xush kelibsiz. Menga istalgan mavzuni yuboring — men sizga 6 ta slayddan iborat professional PowerPoint taqdimot yoki 1-5 betlik referat (Word/PDF) tayyorlab beraman.");
 });
 
-// Har qanday matnli xabarni mavzu sifatida qabul qilamiz -> til tanlashni so'raymiz
+// Har qanday matnli xabarni mavzu sifatida qabul qilamiz -> avval hujjat
+// turini (prezentatsiya yoki referat) so'raymiz.
 bot.on('text', async (ctx) => {
   const prompt = ctx.message.text;
   const userId = ctx.from.id;
 
   if (prompt.startsWith('/')) return;
 
-  pendingTopics.set(userId, prompt);
+  pendingSessions.set(userId, { prompt });
 
   await ctx.reply(
-    `Mavzu: "${prompt}"\n\nQaysi tilda tayyorlaymiz?`,
+    `Mavzu: "${prompt}"\n\nNimani tayyorlaymiz?`,
+    Markup.inlineKeyboard([
+      [
+        Markup.button.callback('📊 Prezentatsiya', 'type_presentation'),
+        Markup.button.callback('📄 Referat', 'type_referat'),
+      ],
+    ])
+  );
+});
+
+// Prezentatsiya tanlansa — to'g'ridan-to'g'ri til tanlashga o'tamiz.
+bot.action('type_presentation', async (ctx) => {
+  const userId = ctx.from.id;
+  const session = pendingSessions.get(userId);
+
+  await ctx.answerCbQuery();
+
+  if (!session) {
+    return ctx.reply('Sessiya eskirdi, mavzuni qayta yozing.');
+  }
+
+  session.type = 'presentation';
+  await ctx.editMessageText(`Mavzu: "${session.prompt}"\nTur: Prezentatsiya 📊`);
+  await askLanguage(ctx);
+});
+
+// Referat tanlansa — avval bet sonini so'raymiz.
+bot.action('type_referat', async (ctx) => {
+  const userId = ctx.from.id;
+  const session = pendingSessions.get(userId);
+
+  await ctx.answerCbQuery();
+
+  if (!session) {
+    return ctx.reply('Sessiya eskirdi, mavzuni qayta yozing.');
+  }
+
+  session.type = 'referat';
+  await ctx.editMessageText(`Mavzu: "${session.prompt}"\nTur: Referat 📄`);
+  await ctx.reply(
+    'Necha bet hajmida bo\'lsin?',
+    Markup.inlineKeyboard([
+      [1, 2, 3, 4, 5].map((n) => Markup.button.callback(`${n}`, `pages_${n}`)),
+    ])
+  );
+});
+
+// Bet soni tanlangach — til tanlashga o'tamiz.
+bot.action(/^pages_([1-5])$/, async (ctx) => {
+  const userId = ctx.from.id;
+  const session = pendingSessions.get(userId);
+
+  await ctx.answerCbQuery();
+
+  if (!session) {
+    return ctx.reply('Sessiya eskirdi, mavzuni qayta yozing.');
+  }
+
+  session.pages = parseInt(ctx.match[1], 10);
+  await ctx.editMessageText(`Mavzu: "${session.prompt}"\nTur: Referat 📄\nHajmi: ${session.pages} bet`);
+  await askLanguage(ctx);
+});
+
+async function askLanguage(ctx) {
+  await ctx.reply(
+    'Qaysi tilda tayyorlaymiz?',
     Markup.inlineKeyboard([
       [
         Markup.button.callback('🇷🇺 Русский', 'lang_ru'),
@@ -113,22 +241,24 @@ bot.on('text', async (ctx) => {
       ],
     ])
   );
-});
+}
 
-// Til tanlangach — navbatga qo'shamiz
+// Til tanlangach — navbatga qo'shamiz (prezentatsiya yoki referat, sessiyada
+// belgilangan turga qarab).
 bot.action(/^lang_(ru|uz)$/, async (ctx) => {
   const userId = ctx.from.id;
   const chatId = ctx.chat.id;
   const language = ctx.match[1];
-  const prompt = pendingTopics.get(userId);
+  const session = pendingSessions.get(userId);
 
   await ctx.answerCbQuery();
 
-  if (!prompt) {
+  if (!session || !session.prompt || !session.type) {
     return ctx.reply('Sessiya eskirdi, mavzuni qayta yozing.');
   }
 
-  pendingTopics.delete(userId);
+  const { prompt, type, pages } = session;
+  pendingSessions.delete(userId);
 
   const languageLabel = language === 'uz' ? "O'zbekcha" : 'Русский';
   await ctx.editMessageText(`Mavzu: "${prompt}"\nTil: ${languageLabel} ✅`);
@@ -136,10 +266,12 @@ bot.action(/^lang_(ru|uz)$/, async (ctx) => {
   try {
     await ctx.reply(`🚀 "${prompt}" mavzusi bo'yicha navbatga qo'shildi. Iltimos, biroz kuting...`);
 
-    await presentationQueue.add('generate-presentation', {
+    await presentationQueue.add('generate-document', {
       chatId,
       prompt,
       language,
+      type,
+      pages,
     });
 
   } catch (error) {
