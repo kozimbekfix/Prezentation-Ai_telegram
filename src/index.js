@@ -153,31 +153,49 @@ app.get('/', (req, res) => {
   res.send('Prezo-AI Bot Server is running!');
 });
 
-app.listen(PORT, () => {
+// --- TELEGRAM BOT: POLLING O'RNIGA WEBHOOK ---
+// Nima uchun: Render'da bir nechta konteyner (eski + yangi) bir lahzaga
+// bir-biriga to'qnashganda (deploy payti) yoki eski instance to'liq
+// o'chib ulgurmasdan getUpdates chaqirilganda, Telegram ikkinchi
+// so'rovchini "409: Conflict" bilan rad etadi — chunki bitta bot tokeniga
+// bir vaqtning o'zida faqat BITTA getUpdates (polling) mijozi ega bo'lishi
+// mumkin. Webhook rejimida esa polling umuman yo'q: Telegram o'zi bizning
+// URL'imizga POST so'rov yuboradi, shuning uchun bir nechta konteyner
+// bir lahzaga tirik bo'lib qolsa ham konflikt yuzaga kelmaydi.
+const WEBHOOK_PATH = `/telegram-webhook/${process.env.TELEGRAM_BOT_TOKEN}`;
+// Render web-service'lar uchun bu o'zgaruvchini avtomatik o'zi beradi
+// (masalan https://prezentation-ai-telegram-2.onrender.com)
+const PUBLIC_URL = process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_URL;
+
+app.use(bot.webhookCallback(WEBHOOK_PATH));
+
+app.listen(PORT, async () => {
   console.log(`[Server] Web server ${PORT}-portda ishga tushdi.`);
+
+  if (!PUBLIC_URL) {
+    console.error(
+      "[Telegram Bot] PUBLIC_URL/RENDER_EXTERNAL_URL topilmadi — webhook o'rnatib bo'lmadi. " +
+      "Lokal muhitda ishlayotgan bo'lsangiz, ngrok kabi tunnel orqali PUBLIC_URL'ni .env'ga qo'shing."
+    );
+    return;
+  }
+
+  try {
+    // setWebhook — idempotent chaqiruv: bir nechta konteyner bir vaqtda
+    // shu funksiyani chaqirsa ham hech qanday konflikt bo'lmaydi (409
+    // yo'q), chunki bu shunchaki "qayerga POST yubor" degan sozlama,
+    // polling kabi "session egallash" emas.
+    await bot.telegram.setWebhook(`${PUBLIC_URL}${WEBHOOK_PATH}`);
+    console.log(`[Telegram Bot] Webhook o'rnatildi: ${PUBLIC_URL}${WEBHOOK_PATH}`);
+  } catch (err) {
+    console.error("[Telegram Bot] Webhook o'rnatishda xatolik:", err.message);
+  }
 });
 
-// Botni ishga tushirish (Polling)
-// dropPendingUpdates: eski/qolib ketgan getUpdates so'rovlarini tozalab,
-// 409 Conflict xavfini kamaytiradi (ayniqsa deploy paytida eski va yangi
-// container bir lahzaga bir-biriga to'qnashganda).
-let botLaunched = false;
-
-bot.launch({ dropPendingUpdates: true }).then(() => {
-  botLaunched = true;
-  console.log("[Telegram Bot] Muvaffaqiyatli ulandi va ishga tushdi!");
-}).catch((err) => {
-  console.error("[Telegram Bot] Ishga tushmadi:", err.message);
-});
-
-// Bot hali ishga tushmasdan SIGINT/SIGTERM kelsa, bot.stop() chaqirilganda
-// Telegraf "Bot is not running!" deb xato tashlab, process qulab tushardi.
-// Shuning uchun faqat botLaunched=true bo'lsagina to'xtatamiz.
+// Graceful shutdown — webhook rejimida bot.stop() shart emas (polling yo'q),
+// faqat process'ni to'g'ri yopamiz.
 const shutdown = (signal) => {
   console.log(`[Process] ${signal} qabul qilindi, to'xtatilmoqda...`);
-  if (botLaunched) {
-    bot.stop(signal);
-  }
   process.exit(0);
 };
 
