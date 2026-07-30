@@ -4,7 +4,7 @@
 
 function estimateLines(text, widthIn, fontSize) {
   if (!text) return 1;
-  const charsPerLine = Math.max(8, Math.floor((widthIn * 72) / (fontSize * 0.52)));
+  const charsPerLine = Math.max(6, Math.floor((widthIn * 72) / (fontSize * 0.85)));
   return Math.max(1, Math.ceil(text.length / charsPerLine));
 }
 
@@ -34,19 +34,19 @@ export const buildImageLeftSlide = async (pptx, content, design, imageQuery, ima
 
   const textX = 0.6;
   const textW = imgX - textX - 0.4;
-  const titleY = 1.0;
+  const titleY = 0.8;
   const titleFontSize = 26;
 
   slide.addText(content.title, {
-    x: textX, y: titleY, w: textW, h: 1.5,
+    x: textX, y: titleY, w: textW, h: 1.9,
     fontSize: titleFontSize, bold: true,
     color: c(colors.text_primary),
     align: "left", valign: "top", fontFace: "Georgia"
   });
 
-  const estLines = Math.min(estimateLines(content.title, textW, titleFontSize), 3);
+  const estLines = estimateLines(content.title, textW, titleFontSize);
   const titleLineHeight = (titleFontSize * 1.25) / 72;
-  const lineY = titleY + estLines * titleLineHeight + 0.1;
+  const lineY = titleY + estLines * titleLineHeight + 0.15;
 
   slide.addShape(pptx.ShapeType.rect, {
     x: textX, y: lineY, w: 0.6, h: 0.045,
@@ -54,7 +54,7 @@ export const buildImageLeftSlide = async (pptx, content, design, imageQuery, ima
   });
 
   slide.addText(content.content, {
-    x: textX, y: lineY + 0.3, w: textW, h: 3.0,
+    x: textX, y: lineY + 0.3, w: textW, h: 2.8,
     fontSize: 14,
     color: c(colors.text_secondary),
     align: "left", valign: "top", lineSpacing: 19,

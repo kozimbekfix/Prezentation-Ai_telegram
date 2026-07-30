@@ -104,12 +104,12 @@ Rules:
 2. No fluff. Be highly professional.
 3. Respect character limits strictly. EVERY field below has a HARD MAXIMUM
    character count — never exceed it:
-   - slide_1_hero.title: <=50 chars
+   - slide_1_hero.title: <=42 chars
    - slide_1_hero.subtitle: <=120 chars
    - slide_2_three_cards.section_title: <=40 chars
    - slide_2_three_cards.cards[].title: <=30 chars
    - slide_2_three_cards.cards[].text: <=100 chars
-   - slide_3_image_left.title: <=40 chars
+   - slide_3_image_left.title: <=34 chars
    - slide_3_image_left.content: <=250 chars
    - slide_4_three_steps.section_title: <=40 chars
    - slide_4_three_steps.steps[].title: <=30 chars
@@ -117,9 +117,13 @@ Rules:
    - slide_5_four_facts.section_title: <=40 chars
    - slide_5_four_facts.facts[].metric: <=15 chars
    - slide_5_four_facts.facts[].detail: <=60 chars
-   - slide_6_ending.title: <=40 chars
-   - slide_6_ending.call_to_action: <=80 chars
-   - slide_6_ending.contact_info: <=50 chars
+   - slide_6_ending.title: <=34 chars
+   - slide_6_ending.summary: <=220 chars
+4. slide_6_ending must be a genuine, thoughtful CONCLUSION of the topic —
+   a closing summary of the key takeaway. It must NEVER be a sales pitch,
+   advertisement, invented email/phone/contact info, or call to "invest",
+   "contact us", "buy now", etc. Do not mention AI, ChatGPT, or how this
+   presentation was made anywhere in the content.
 Return strictly as JSON matching this schema:
 ${JSON.stringify(contentSchema.shape, null, 2)}`;
 
@@ -181,8 +185,7 @@ ${JSON.stringify(contentSchema.shape, null, 2)}`;
     });
 
     setIfExists(parsed.slide_6_ending, "title", 40);
-    setIfExists(parsed.slide_6_ending, "call_to_action", 80);
-    setIfExists(parsed.slide_6_ending, "contact_info", 50);
+    setIfExists(parsed.slide_6_ending, "summary", 220);
   }
 
   async runVisual(topic, content) {

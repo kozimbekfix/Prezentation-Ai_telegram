@@ -7,8 +7,8 @@
 // joylashadi (uzun sarlavhalarda matn ustidan chiziq o'tib ketmasligi uchun).
 function estimateLines(text, widthIn, fontSize) {
   if (!text) return 1;
-  // Taxminiy: bold Georgia shriftida bitta belgi eni ~ fontSize * 0.52pt
-  const charsPerLine = Math.max(8, Math.floor((widthIn * 72) / (fontSize * 0.52)));
+  // Bold Georgia shriftida bitta belgi eni taxminan fontSize*0.85pt.
+  const charsPerLine = Math.max(6, Math.floor((widthIn * 72) / (fontSize * 0.85)));
   return Math.max(1, Math.ceil(text.length / charsPerLine));
 }
 
@@ -39,11 +39,11 @@ export const buildHeroSlide = async (pptx, content, design, imageQuery, imageDat
   // O'ng panel — sarlavha va tavsif
   const textX = imgW + 0.5;
   const textW = 10 - textX - 0.5;
-  const titleY = 1.4;
+  const titleY = 1.1;
   const titleFontSize = 32;
 
   slide.addText(content.title, {
-    x: textX, y: titleY, w: textW, h: 1.9,
+    x: textX, y: titleY, w: textW, h: 2.4,
     fontSize: titleFontSize, bold: true,
     color: c(colors.text_primary),
     align: "left", valign: "top",
@@ -51,9 +51,9 @@ export const buildHeroSlide = async (pptx, content, design, imageQuery, imageDat
   });
 
   // Sarlavha qatorlar soniga qarab chiziq va tavsifni pastroqqa suramiz
-  const estLines = Math.min(estimateLines(content.title, textW, titleFontSize), 3);
+  const estLines = estimateLines(content.title, textW, titleFontSize);
   const titleLineHeight = (titleFontSize * 1.25) / 72; // taxminiy qator balandligi (dyuym)
-  const lineY = titleY + estLines * titleLineHeight + 0.12;
+  const lineY = titleY + estLines * titleLineHeight + 0.15;
 
   slide.addShape(pptx.ShapeType.rect, {
     x: textX, y: lineY, w: 0.7, h: 0.05,
@@ -61,11 +61,11 @@ export const buildHeroSlide = async (pptx, content, design, imageQuery, imageDat
   });
 
   slide.addText(content.subtitle, {
-    x: textX, y: lineY + 0.35, w: textW, h: 2.0,
+    x: textX, y: lineY + 0.35, w: textW, h: 1.7,
     fontSize: 14,
     color: c(colors.text_secondary),
     align: "left", valign: "top",
     lineSpacing: 20,
     fontFace: "Arial"
   });
-};
+};;

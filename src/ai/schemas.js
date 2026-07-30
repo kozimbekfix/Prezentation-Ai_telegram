@@ -16,7 +16,7 @@ export const plannerSchema = z.object({
 // 2. Content Writer Schema (Faqat matn, qat'iy uzunliklar)
 export const contentSchema = z.object({
   slide_1_hero: z.object({
-    title: z.string().max(50),
+    title: z.string().max(42),
     subtitle: z.string().max(120)
   }),
   slide_2_three_cards: z.object({
@@ -27,7 +27,7 @@ export const contentSchema = z.object({
     })).length(3)
   }),
   slide_3_image_left: z.object({
-    title: z.string().max(40),
+    title: z.string().max(34),
     content: z.string().max(250)
   }),
   slide_4_three_steps: z.object({
@@ -46,9 +46,8 @@ export const contentSchema = z.object({
     })).length(4)
   }),
   slide_6_ending: z.object({
-    title: z.string().max(40),
-    call_to_action: z.string().max(80),
-    contact_info: z.string().max(50)
+    title: z.string().max(34),
+    summary: z.string().max(220)
   })
 });
 
