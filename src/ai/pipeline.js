@@ -1,59 +1,14 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import { plannerSchema, contentSchema, visualSchema, imageSelectorSchema, referatSchema } from "./schemas.js";
+import { withGeminiKey, keyCount } from "./geminiPool.js";
 import dotenv from "dotenv";
 import axios from "axios";
 
 dotenv.config();
 
-// --- KO'P KALITLI GEMINI HAVUZI (round-robin) ---
-// Google'ning bepul tarif limiti API KALITIGA emas, balki LOYIHAGA (Google
-// Cloud project) bog'liq. Shuning uchun bitta loyihada bir nechta kalit
-// yaratish foyda bermaydi — har biri MUSTAQIL loyihada bo'lishi shart.
-// Bunday kalitlar GEMINI_API_KEYS o'zgaruvchisida vergul bilan ajratib
-// yoziladi:
-//   GEMINI_API_KEYS=kalit1,kalit2,kalit3,kalit4
-// Orqaga moslik uchun eski GEMINI_API_KEY (bitta kalit) ham hali ishlaydi.
+// Matn generatsiyasi uchun model nomi — kalitlarning o'zi va navbat/cooldown
+// holati endi geminiPool.js'da BOSHQARILADI (imageEngine.js bilan umumiy),
+// bu yerda faqat qaysi modelni chaqirishni belgilaymiz.
 const GEMINI_MODEL_NAME = process.env.GEMINI_MODEL || "gemini-flash-latest";
-
-const geminiKeys = (process.env.GEMINI_API_KEYS || process.env.GEMINI_API_KEY || "")
-  .split(",")
-  .map((k) => k.trim())
-  .filter(Boolean);
-
-if (geminiKeys.length === 0) {
-  console.error("[Pipeline] Ogohlantirish: GEMINI_API_KEY yoki GEMINI_API_KEYS .env'da topilmadi!");
-}
-
-// Har bir kalit uchun alohida model instansi tayyorlaymiz.
-const geminiModels = geminiKeys.map((key) =>
-  new GoogleGenerativeAI(key).getGenerativeModel({
-    model: GEMINI_MODEL_NAME,
-    generationConfig: { responseMimeType: "application/json" },
-  })
-);
-
-// Har bir kalit uchun "bu vaqtgacha band/limitda" belgisi (millisekund,
-// Date.now() bilan solishtiriladi). Kalit 429/503 bersa, shu kalit 1
-// daqiqaga chetlashtiriladi va navbat KEYINGI kalitga o'tadi.
-const KEY_COOLDOWN_MS = 60_000; // 1 daqiqa
-const keyCooldownUntil = new Array(geminiKeys.length).fill(0);
-
-// Round-robin boshlanish nuqtasi — har chaqiruvda keyingi kalitdan
-// boshlanadi, shunda yuklama barcha kalitlar orasida teng taqsimlanadi
-// (doim bitta kalit "urib" qolmaydi).
-let nextKeyIndex = 0;
-
-function isKeyOnCooldown(idx) {
-  return Date.now() < keyCooldownUntil[idx];
-}
-
-function markKeyOnCooldown(idx, reason) {
-  keyCooldownUntil[idx] = Date.now() + KEY_COOLDOWN_MS;
-  console.warn(
-    `[AI Pool] Gemini kalit #${idx + 1}/${geminiKeys.length} ${reason} sababli ` +
-    `1 daqiqaga chetlashtirildi. Navbat keyingi kalitga o'tmoqda...`
-  );
-}
 
 // --- ZAXIRA (FALLBACK) AI: OpenRouter ---
 // Barcha Gemini kalitlari bir vaqtning o'zida limitga uchrasa (bir nechta
@@ -92,61 +47,64 @@ async function callOpenRouterFallback(prompt) {
   // yuborishi mumkin — shuni tozalaymiz.
   text = text.replace(/```json\s*/gi, "").replace(/```/g, "").trim();
 
+  // OpenRouter (OpenAI-moslashgan) javobi token sonini `usage.total_tokens`
+  // maydonida beradi — buni Gemini'ning `usageMetadata.totalTokenCount`
+  // shakliga moslab qaytaramiz, shunda chaqiruvchi kod ikkala provayderni
+  // ham bir xil interfeys orqali (token hisobini ham) ishlata oladi.
+  const totalTokenCount = response.data?.usage?.total_tokens || 0;
+
   // Chaqiruvchi kod har doim `result.response.text()` shaklida foydalanadi
   // (Gemini SDK'ning javob formatiga o'xshatib) — shu bilan pipeline'ning
   // qolgan qismini o'zgartirmasdan barcha provayderlarni bir xil interfeys
   // orqali ishlatishimiz mumkin.
-  return { response: { text: () => text } };
+  return { response: { text: () => text, usageMetadata: { totalTokenCount } } };
 }
 
 export class PresentationAIPipeline {
 
-  // Avval mavjud Gemini kalitlarini round-robin tartibida sinab ko'radi
-  // (har biri band/limitda bo'lsa — keyingisiga o'tadi). Barcha kalitlar
-  // tugagandan keyingina OpenRouter zaxira provayderga murojaat qiladi.
+  // Shu pipeline instansi davomida (bitta prezentatsiya/referat generatsiyasi
+  // uchun) sarflangan JAMI token soni — /usertokens admin buyrug'i uchun
+  // foydalanuvchi hisobiga yozib qo'yiladi (index.js worker qismida).
+  totalTokens = 0;
+
+  // Umumiy kalit havuzi (geminiPool.js) orqali round-robin tartibida
+  // sinab ko'radi — bu HAVUZ endi imageEngine.js (rasm generatsiyasi)
+  // bilan ham BIRGA ishlatiladi, shuning uchun bitta kalit faqat matn
+  // yoki faqat rasm chaqiruvlaridan emas, ikkalasidan ham teng "ulush"
+  // oladi. Barcha kalitlar tugagandan keyingina OpenRouter zaxira
+  // provayderga murojaat qiladi.
   async generateWithRetry(prompt) {
-    if (geminiKeys.length === 0 && process.env.OPENROUTER_API_KEY) {
-      return await callOpenRouterFallback(prompt);
+    if (keyCount === 0 && process.env.OPENROUTER_API_KEY) {
+      const result = await callOpenRouterFallback(prompt);
+      this.totalTokens += result?.response?.usageMetadata?.totalTokenCount || 0;
+      return result;
     }
 
-    const startIndex = nextKeyIndex;
-    let lastError = null;
-
-    for (let i = 0; i < geminiKeys.length; i++) {
-      const idx = (startIndex + i) % geminiKeys.length;
-
-      if (isKeyOnCooldown(idx)) continue;
-
-      try {
-        const result = await geminiModels[idx].generateContent(prompt);
-        // Keyingi chaqiruv navbatdagi kalitdan boshlansin — yuklama teng taqsimlanadi.
-        nextKeyIndex = (idx + 1) % geminiKeys.length;
-        return result;
-      } catch (error) {
-        const status = error?.status || error?.response?.status;
-        const isRetryable = status === 503 || status === 429;
-        lastError = error;
-
-        if (isRetryable) {
-          markKeyOnCooldown(idx, status === 429 ? "429 (limit/kvota)" : "503 (band)");
-          continue; // keyingi kalitni sinaymiz
+    try {
+      const result = await withGeminiKey((client) =>
+        client
+          .getGenerativeModel({
+            model: GEMINI_MODEL_NAME,
+            generationConfig: { responseMimeType: "application/json" },
+          })
+          .generateContent(prompt)
+      );
+      this.totalTokens += result?.response?.usageMetadata?.totalTokenCount || 0;
+      return result;
+    } catch (error) {
+      // Barcha kalitlar band/limitda ekan — zaxira provayderga o'tamiz.
+      if (process.env.OPENROUTER_API_KEY) {
+        console.warn(`[AI Pool] Barcha ${keyCount} ta Gemini kalit band. OpenRouter (${OPENROUTER_MODEL}) ishlatilmoqda...`);
+        try {
+          const result = await callOpenRouterFallback(prompt);
+          this.totalTokens += result?.response?.usageMetadata?.totalTokenCount || 0;
+          return result;
+        } catch (fallbackError) {
+          console.error("[AI Fallback] OpenRouter ham muvaffaqiyatsiz bo'ldi:", fallbackError.message);
         }
-
-        throw error; // limit bilan bog'liq bo'lmagan xato — darhol tashlaymiz
       }
+      throw error;
     }
-
-    // Barcha kalitlar band/limitda ekan — zaxira provayderga o'tamiz.
-    if (process.env.OPENROUTER_API_KEY) {
-      console.warn(`[AI Pool] Barcha ${geminiKeys.length} ta Gemini kalit band. OpenRouter (${OPENROUTER_MODEL}) ishlatilmoqda...`);
-      try {
-        return await callOpenRouterFallback(prompt);
-      } catch (fallbackError) {
-        console.error("[AI Fallback] OpenRouter ham muvaffaqiyatsiz bo'ldi:", fallbackError.message);
-      }
-    }
-
-    throw lastError || new Error("Barcha AI provayderlar mavjud emas.");
   }
   
   // Til kodini AI uchun tushunarli to'liq nomga o'giramiz.
@@ -178,7 +136,8 @@ export class PresentationAIPipeline {
           plan,
           content,
           design,
-          images
+          images,
+          tokensUsed: this.totalTokens
         }
       };
 
@@ -202,7 +161,7 @@ export class PresentationAIPipeline {
     try {
       console.log(`[Pipeline/Referat] Referat AI ishga tushdi... (${safePages} bet, til: ${languageName})`);
       const content = await this.runReferatWriter(topic, languageName, safePages);
-      return { isSuccess: true, data: { content, pages: safePages } };
+      return { isSuccess: true, data: { content, pages: safePages, tokensUsed: this.totalTokens } };
     } catch (error) {
       console.error("[Pipeline/Referat Error]", error);
       return { isSuccess: false, error: error.message };

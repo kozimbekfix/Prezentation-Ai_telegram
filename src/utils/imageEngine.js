@@ -1,22 +1,16 @@
 import axios from 'axios';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { withGeminiKey, keyCount } from '../ai/geminiPool.js';
 
 const UNSPLASH_API_URL = 'https://api.unsplash.com/search/photos';
 const REQUEST_TIMEOUT_MS = 15_000;
 // "Nano Banana" — Gemini'ning rasm generatsiya qiluvchi modeli. Unsplash'da
 // mavzuga mos rasm topilmasa, shu model orqali mavzuga mos rasm generatsiya
-// qilamiz (GEMINI_API_KEY allaqachon bor, qo'shimcha kalit kerak emas).
+// qilamiz. Kalitlar geminiPool.js orqali MATN generatsiyasi bilan BIRGA,
+// umumiy round-robin havuzdan olinadi — shunda bitta kalit faqat rasm
+// chaqiruvlaridan charchab, boshqa kalitlar bo'sh turgan holat bo'lmaydi.
 const IMAGE_GEN_MODEL = process.env.GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-image';
 
 let warnedAboutMissingUnsplashKey = false;
-let genAI = null;
-
-function getGenAI() {
-  if (!genAI && process.env.GEMINI_API_KEY) {
-    genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-  }
-  return genAI;
-}
 
 /**
  * Unsplash'dan kalit so'z bo'yicha rasm qidiradi va topilsa URL qaytaradi.
@@ -74,23 +68,25 @@ async function downloadAsBase64(url) {
  * shu holatda bezakli aksent panelga o'tadi, rasmsiz qoladi).
  */
 async function generateAIImage(keyword) {
-  const client = getGenAI();
-  if (!client) {
-    console.warn('[ImageEngine] GEMINI_API_KEY yo\'q — AI rasm generatsiyasi o\'tkazib yuborildi.');
+  if (keyCount === 0) {
+    console.warn("[ImageEngine] Gemini kaliti yo'q — AI rasm generatsiyasi o'tkazib yuborildi.");
     return null;
   }
 
   try {
-    const model = client.getGenerativeModel({
-      model: IMAGE_GEN_MODEL,
-      generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
-    });
-
     const prompt =
       `A professional, realistic, high-quality wide photograph representing: "${keyword}". ` +
       `No text, no watermarks, no logos in the image. Cinematic lighting, landscape orientation.`;
 
-    const result = await model.generateContent(prompt);
+    const result = await withGeminiKey((client) =>
+      client
+        .getGenerativeModel({
+          model: IMAGE_GEN_MODEL,
+          generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
+        })
+        .generateContent(prompt)
+    );
+
     const parts = result.response?.candidates?.[0]?.content?.parts || [];
 
     for (const part of parts) {
