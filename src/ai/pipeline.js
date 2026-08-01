@@ -1,5 +1,6 @@
 import { plannerSchema, contentSchema, visualSchema, imageSelectorSchema, referatSchema } from "./schemas.js";
 import { withGeminiKey, keyCount } from "./geminiPool.js";
+import { withRetry } from "../utils/retry.js";
 import dotenv from "dotenv";
 import axios from "axios";
 
@@ -81,13 +82,21 @@ export class PresentationAIPipeline {
     }
 
     try {
-      const result = await withGeminiKey((client) =>
-        client
-          .getGenerativeModel({
-            model: GEMINI_MODEL_NAME,
-            generationConfig: { responseMimeType: "application/json" },
-          })
-          .generateContent(prompt)
+      // withGeminiKey o'zi 429/503'da kalitlar orasida almashadi. Bu yerdagi
+      // withRetry esa shunga aloqasiz — vaqtinchalik tarmoq uzilishi/timeout
+      // barcha kalitlarga bir vaqtda ta'sir qilganda ham 1 marta qayta
+      // urinib ko'radi (masalan server tarmog'idagi qisqa uzilish).
+      const result = await withRetry(
+        () =>
+          withGeminiKey((client) =>
+            client
+              .getGenerativeModel({
+                model: GEMINI_MODEL_NAME,
+                generationConfig: { responseMimeType: "application/json" },
+              })
+              .generateContent(prompt)
+          ),
+        { label: "Gemini matn generatsiyasi" }
       );
       this.totalTokens += result?.response?.usageMetadata?.totalTokenCount || 0;
       return result;

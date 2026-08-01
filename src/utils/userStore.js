@@ -24,6 +24,7 @@ export async function touchUser(redis, userId, username) {
   const existing = parseRecord(existingRaw);
 
   const record = {
+    ...existing,
     id,
     username: username || existing?.username || null,
     firstSeen: existing?.firstSeen || Date.now(),
@@ -115,22 +116,82 @@ function todayStr() {
 }
 
 // Foydalanuvchi bugun yana generatsiya so'rashi mumkinmi — tekshiradi.
-// "star" (⭐) foydalanuvchilar uchun limit umuman ishlamaydi (cheksiz).
+// "star" (⭐, admin bergan) foydalanuvchilar uchun limit umuman ishlamaydi
+// (cheksiz). Oddiy foydalanuvchida kunlik limit tugagan bo'lsa, lekin
+// sotib olingan "credits" (Telegram Stars orqali) balansi bo'lsa — shu
+// hisobdan generatsiya qilishga ruxsat beriladi (useCredit=true qaytadi,
+// chaqiruvchi kod keyin consumeCredit() bilan 1 tasini sarflashi kerak).
 export async function canGenerate(redis, userId, dailyLimit = 3) {
   const user = await getUser(redis, userId);
 
   if (user?.star) {
-    return { allowed: true, remaining: Infinity, star: true };
+    return { allowed: true, remaining: Infinity, star: true, useCredit: false, credits: user?.credits || 0 };
   }
 
   const today = todayStr();
   const usedToday = user?.dailyDate === today ? (user.dailyCount || 0) : 0;
+  const withinDailyLimit = usedToday < dailyLimit;
+  const credits = user?.credits || 0;
 
-  return {
-    allowed: usedToday < dailyLimit,
-    remaining: Math.max(0, dailyLimit - usedToday),
-    star: false,
+  if (withinDailyLimit) {
+    return {
+      allowed: true,
+      remaining: Math.max(0, dailyLimit - usedToday),
+      star: false,
+      useCredit: false,
+      credits,
+    };
+  }
+
+  if (credits > 0) {
+    return { allowed: true, remaining: 0, star: false, useCredit: true, credits };
+  }
+
+  return { allowed: false, remaining: 0, star: false, useCredit: false, credits: 0 };
+}
+
+// Foydalanuvchining ⭐ Stars orqali sotib olgan qo'shimcha generatsiya
+// balansiga (kunlik limitdan tashqari, muddatsiz amal qiladigan) `amount`
+// qo'shadi. Telegram to'lovi muvaffaqiyatli yakunlangach chaqiriladi.
+export async function addCredits(redis, userId, amount) {
+  if (!amount || amount <= 0) return;
+  const id = String(userId);
+  const existing = parseRecord(await redis.hget(USERS_KEY, id)) || {
+    id,
+    username: null,
+    firstSeen: Date.now(),
+    lastSeen: Date.now(),
+    blocked: false,
+    tokens: 0,
   };
+
+  existing.credits = (existing.credits || 0) + amount;
+  await redis.hset(USERS_KEY, id, JSON.stringify(existing));
+  return existing.credits;
+}
+
+// Kredit balansidan 1 tasini sarflaydi (generatsiya muvaffaqiyatli navbatga
+// qo'shilgandan keyin chaqiriladi — canGenerate() useCredit=true qaytargan
+// holatda). Yetarli kredit bo'lmasa hech narsa qilmaydi.
+export async function consumeCredit(redis, userId) {
+  const id = String(userId);
+  const existing = parseRecord(await redis.hget(USERS_KEY, id));
+  if (!existing || !(existing.credits > 0)) return 0;
+
+  existing.credits -= 1;
+  await redis.hset(USERS_KEY, id, JSON.stringify(existing));
+  return existing.credits;
+}
+
+// Xato/bekor qilish tufayli muvaffaqiyatsiz yakunlangan so'rov uchun
+// sarflangan kreditni QAYTARADI — xuddi refundDailyUsage kabi mantiq.
+export async function refundCredit(redis, userId) {
+  const id = String(userId);
+  const existing = parseRecord(await redis.hget(USERS_KEY, id));
+  if (!existing) return;
+
+  existing.credits = (existing.credits || 0) + 1;
+  await redis.hset(USERS_KEY, id, JSON.stringify(existing));
 }
 
 // Har bir muvaffaqiyatli navbatga qo'shishdan so'ng chaqiriladi — bugungi

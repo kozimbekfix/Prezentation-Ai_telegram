@@ -11,6 +11,7 @@ import { convertToPdf, cleanupTempFiles } from './engine/pdfEngine.js';
 import {
   touchUser, getUser, resolveUser, setBlocked, isBlocked, addTokens,
   setLanguage, listUsers, canGenerate, incrementDailyUsage, refundDailyUsage, setStar,
+  addCredits, consumeCredit, refundCredit,
 } from './utils/userStore.js';
 import { t } from './utils/messages.js';
 import os from 'os';
@@ -24,8 +25,39 @@ const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
 const connection = new Redis(redisUrl, { maxRetriesPerRequest: null });
 
-// BullMQ navbatini yaratamiz
-const presentationQueue = new Queue('presentation-queue', { connection });
+// BullMQ navbatini yaratamiz. defaultJobOptions orqali har bir vazifa
+// uchun avtomatik "tozalash" siyosati o'rnatiladi — aks holda Redis'da
+// muvaffaqiyatli/muvaffaqiyatsiz bo'lgan barcha vazifalar ABADIY saqlanib
+// qolar edi (xotira vaqt o'tishi bilan asta-sekin to'lib boradi).
+// Muvaffaqiyatli vazifalar: 1 soat YOKI oxirgi 500 tasi saqlanadi.
+// Muvaffaqiyatsiz vazifalar: debug uchun 3 kunroq saqlanadi.
+const presentationQueue = new Queue('presentation-queue', {
+  connection,
+  defaultJobOptions: {
+    removeOnComplete: { age: 60 * 60, count: 500 },
+    removeOnFail: { age: 3 * 24 * 60 * 60 },
+  },
+});
+
+// --- ALOHIDA XATOLAR KANALI ---
+// .env'da ERROR_LOG_CHAT_ID (kanal/guruh/shaxsiy chat ID) sozlansa, worker
+// ichida yuz beradigan barcha jiddiy xatolar (AI xatosi, fayl yaratish
+// xatosi, webhook o'rnatish xatosi va h.k.) shu chatga alohida, batafsil
+// xabar sifatida yuboriladi — shunda admin buni oddiy foydalanuvchi
+// xabarlaridan farqli o'laroq darhol ko'radi (Render loglarini kuzatib
+// o'tirishning hojati qolmaydi).
+const ERROR_LOG_CHAT_ID = process.env.ERROR_LOG_CHAT_ID;
+
+async function logErrorToChannel(context, error) {
+  if (!ERROR_LOG_CHAT_ID) return;
+  try {
+    const details = error?.stack || error?.message || String(error);
+    const text = `⚠️ *Xatolik:* ${context}\n\n\`\`\`\n${details}\n\`\`\``.slice(0, 4000);
+    await bot.telegram.sendMessage(ERROR_LOG_CHAT_ID, text, { parse_mode: 'Markdown' });
+  } catch (err) {
+    console.error('[ErrorChannel] Xatolar kanaliga xabar yuborib bo\'lmadi:', err.message);
+  }
+}
 
 // Admin buyruqlarini (/users, /blockuser, /unblockuser, /usertokens) faqat
 // shu Telegram ID'lar ishlatishi mumkin. .env'da vergul bilan bir nechtasini
@@ -137,16 +169,28 @@ function friendlyErrorMessage(error, language) {
 console.log("[Worker] Background worker ishga tushdi va navbatni kutmoqda...");
 
 const worker = new Worker('presentation-queue', async (job) => {
-  const { chatId, prompt, language, type, pages } = job.data;
+  const { chatId, prompt, language, type, pages, useCredit } = job.data;
 
   if (type === 'referat') {
-    await processReferatJob({ chatId, prompt, language, pages, jobId: job.id });
+    await processReferatJob({ chatId, prompt, language, pages, jobId: job.id, useCredit });
   } else {
-    await processPresentationJob({ chatId, prompt, language, jobId: job.id });
+    await processPresentationJob({ chatId, prompt, language, jobId: job.id, useCredit });
   }
 }, { connection });
 
-async function processPresentationJob({ chatId, prompt, language, jobId }) {
+// So'rov muvaffaqiyatsiz/bekor bo'lganda, u qaysi hisobdan (kunlik limit
+// yoki sotib olingan ⭐ kredit) sarflangan bo'lsa, aynan o'sha hisobga
+// qaytariladi — aks holda kredit hisobidan foydalangan kishiga bekorga
+// kunlik limit qaytarilib, krediti esa isrof bo'lib qolar edi.
+async function refundUsage(chatId, useCredit) {
+  if (useCredit) {
+    await refundCredit(connection, chatId);
+  } else {
+    await refundDailyUsage(connection, chatId);
+  }
+}
+
+async function processPresentationJob({ chatId, prompt, language, jobId, useCredit }) {
   const uniqueId = `${Date.now()}_${Math.random().toString(36).substring(7)}`;
   let pptxPath = null;
   let pdfPath = null;
@@ -168,7 +212,7 @@ async function processPresentationJob({ chatId, prompt, language, jobId }) {
     // AI javobi allaqachon kelgan (token sarflangan), lekin fayl hali
     // yaratilmagan, shuning uchun shu yerda to'xtatish eng maqbul nuqta.
     if (await isJobCancelled(jobId)) {
-      await refundDailyUsage(connection, chatId);
+      await refundUsage(chatId, useCredit);
       await bot.telegram.sendMessage(chatId, t(language, 'cancelledMidway'), MODE_KEYBOARD);
       return;
     }
@@ -212,8 +256,9 @@ async function processPresentationJob({ chatId, prompt, language, jobId }) {
   } catch (error) {
     console.error("[Worker Error]", error);
     await connection.incr(STATS_KEYS.errors);
-    await refundDailyUsage(connection, chatId);
+    await refundUsage(chatId, useCredit);
     await bot.telegram.sendMessage(chatId, friendlyErrorMessage(error, language), MODE_KEYBOARD);
+    await logErrorToChannel(`Prezentatsiya generatsiyasi (chatId: ${chatId}, mavzu: "${prompt}")`, error);
   } finally {
     await cleanupTempFiles([pptxPath, pdfPath]);
     await connection.del(`cancel:${jobId}`);
@@ -221,7 +266,7 @@ async function processPresentationJob({ chatId, prompt, language, jobId }) {
   }
 }
 
-async function processReferatJob({ chatId, prompt, language, pages, jobId }) {
+async function processReferatJob({ chatId, prompt, language, pages, jobId, useCredit }) {
   const uniqueId = `${Date.now()}_${Math.random().toString(36).substring(7)}`;
   let docxPath = null;
   let pdfPath = null;
@@ -240,7 +285,7 @@ async function processReferatJob({ chatId, prompt, language, pages, jobId }) {
     await addTokens(connection, chatId, aiResult.data.tokensUsed);
 
     if (await isJobCancelled(jobId)) {
-      await refundDailyUsage(connection, chatId);
+      await refundUsage(chatId, useCredit);
       await bot.telegram.sendMessage(chatId, t(language, 'cancelledMidway'), MODE_KEYBOARD);
       return;
     }
@@ -279,8 +324,9 @@ async function processReferatJob({ chatId, prompt, language, pages, jobId }) {
   } catch (error) {
     console.error("[Worker Error/Referat]", error);
     await connection.incr(STATS_KEYS.errors);
-    await refundDailyUsage(connection, chatId);
+    await refundUsage(chatId, useCredit);
     await bot.telegram.sendMessage(chatId, friendlyErrorMessage(error, language), MODE_KEYBOARD);
+    await logErrorToChannel(`Referat generatsiyasi (chatId: ${chatId}, mavzu: "${prompt}")`, error);
   } finally {
     await cleanupTempFiles([docxPath, pdfPath]);
     await connection.del(`cancel:${jobId}`);
@@ -301,6 +347,50 @@ const MODE_KEYBOARD = Markup.keyboard([
 
 const PRESENTATION_LABEL = '📊 Prezentatsiya';
 const REFERAT_LABEL = '📄 Referat';
+
+// Navbatga qo'shilgandan keyingi xabarga qo'shib yuboriladigan inline
+// "Bekor qilish" tugmasi — foydalanuvchi endi /cancel matnini qo'lda
+// yozmasdan, bitta bosish bilan so'rovni to'xtata oladi.
+function cancelKeyboard(language) {
+  return Markup.inlineKeyboard([
+    Markup.button.callback(t(language, 'cancelButtonLabel'), 'cancel_job'),
+  ]);
+}
+
+// /cancel buyrug'i VA "❌ Bekor qilish" inline tugmasi UCHUN umumiy mantiq.
+// Natijada foydalanuvchiga ko'rsatiladigan xabar matni (tarjima kaliti)
+// qaytariladi, chaqiruvchi kod uni ctx.reply/editMessageText bilan
+// ko'rsatadi.
+async function cancelActiveJob(userId, language) {
+  const jobId = pendingJobs.get(String(userId));
+
+  if (!jobId) {
+    return { key: 'noActiveJob', keyboard: undefined };
+  }
+
+  const job = await presentationQueue.getJob(jobId);
+  if (!job) {
+    pendingJobs.delete(String(userId));
+    return { key: 'alreadyFinished', keyboard: undefined };
+  }
+
+  const state = await job.getState();
+
+  if (state === 'waiting' || state === 'delayed') {
+    await job.remove();
+    await refundUsage(userId, job.data?.useCredit);
+    pendingJobs.delete(String(userId));
+    return { key: 'cancelledBeforeStart', keyboard: MODE_KEYBOARD };
+  }
+
+  if (state === 'active') {
+    await markJobCancelled(jobId);
+    return { key: 'cancelledMidway', keyboard: MODE_KEYBOARD };
+  }
+
+  pendingJobs.delete(String(userId));
+  return { key: 'alreadyFinished', keyboard: undefined };
+}
 
 // --- ADMIN BUYRUQLARI (faqat ADMIN_IDS'dagi ID'lar uchun) ---
 
@@ -449,37 +539,31 @@ bot.command('broadcast', async (ctx) => {
 // bekor qilinadi; allaqachon ishlayotgan bo'lsa, worker keyingi qulay
 // bosqichda (fayl yaratishdan oldin) to'xtashga harakat qiladi.
 bot.command('cancel', async (ctx) => {
-  const userId = String(ctx.from.id);
-  const jobId = pendingJobs.get(userId);
+  const userId = ctx.from.id;
   const language = (await getUser(connection, userId))?.language || 'uz';
 
-  if (!jobId) {
-    return ctx.reply(t(language, 'noActiveJob'));
+  const { key, keyboard } = await cancelActiveJob(userId, language);
+  return ctx.reply(t(language, key), keyboard);
+});
+
+// Xuddi /cancel bilan bir xil — lekin generatsiya davomida yuboriladigan
+// xabardagi inline "❌ Bekor qilish" tugmasi orqali.
+bot.action('cancel_job', async (ctx) => {
+  const userId = ctx.from.id;
+  const language = (await getUser(connection, userId))?.language || 'uz';
+
+  await ctx.answerCbQuery();
+  const { key, keyboard } = await cancelActiveJob(userId, language);
+
+  // Tugma bosilgan xabarni tahrirlab, tugmani olib tashlaymiz (qayta
+  // bosilib ketmasligi uchun), natija haqidagi xabarni esa alohida yuboramiz.
+  try {
+    await ctx.editMessageReplyMarkup(undefined);
+  } catch {
+    // Xabar allaqachon o'zgargan/eski bo'lishi mumkin — muhim emas.
   }
 
-  const job = await presentationQueue.getJob(jobId);
-  if (!job) {
-    pendingJobs.delete(userId);
-    return ctx.reply(t(language, 'alreadyFinished'));
-  }
-
-  const state = await job.getState();
-
-  if (state === 'waiting' || state === 'delayed') {
-    await job.remove();
-    await refundDailyUsage(connection, userId);
-    pendingJobs.delete(userId);
-    return ctx.reply(t(language, 'cancelledBeforeStart'), MODE_KEYBOARD);
-  }
-
-  if (state === 'active') {
-    await markJobCancelled(jobId);
-    return ctx.reply(t(language, 'cancelledMidway'), MODE_KEYBOARD);
-  }
-
-  // completed / failed — allaqachon tugagan
-  pendingJobs.delete(userId);
-  return ctx.reply(t(language, 'alreadyFinished'));
+  return ctx.reply(t(language, key), keyboard);
 });
 
 // /staruser @username yoki /staruser 123456789 — bu foydalanuvchiga kunlik
@@ -683,14 +767,24 @@ bot.action(/^lang_(ru|uz)$/, async (ctx) => {
   const languageLabel = language === 'uz' ? "O'zbekcha" : 'Русский';
   await ctx.editMessageText(`Mavzu: "${prompt}"\nTil: ${languageLabel} ✅`);
 
-  // Kunlik bepul limitni tekshiramiz (star foydalanuvchilar uchun cheksiz).
-  const { allowed, remaining } = await canGenerate(connection, userId, DAILY_LIMIT);
+  // Kunlik bepul limitni tekshiramiz (star foydalanuvchilar uchun cheksiz,
+  // sotib olingan ⭐ kreditlar bo'lsa — shulardan foydalanishga ruxsat
+  // beriladi, useCredit=true bilan).
+  const { allowed, useCredit } = await canGenerate(connection, userId, DAILY_LIMIT);
   if (!allowed) {
-    return ctx.reply(t(language, 'dailyLimitReached', DAILY_LIMIT), MODE_KEYBOARD);
+    return ctx.reply(
+      t(language, 'dailyLimitReached', DAILY_LIMIT),
+      Markup.inlineKeyboard([
+        Markup.button.callback(t(language, 'buyCreditButtonLabel'), 'buy_credit'),
+      ])
+    );
   }
 
   try {
-    await ctx.reply(`🚀 "${prompt}" mavzusi bo'yicha navbatga qo'shildi. Iltimos, biroz kuting...`);
+    await ctx.reply(
+      `🚀 "${prompt}" mavzusi bo'yicha navbatga qo'shildi. Iltimos, biroz kuting...`,
+      cancelKeyboard(language)
+    );
 
     const job = await presentationQueue.add('generate-document', {
       chatId,
@@ -698,16 +792,65 @@ bot.action(/^lang_(ru|uz)$/, async (ctx) => {
       language,
       type,
       pages,
+      useCredit,
     });
 
-    await incrementDailyUsage(connection, userId);
+    if (useCredit) {
+      await consumeCredit(connection, userId);
+    } else {
+      await incrementDailyUsage(connection, userId);
+    }
     await connection.incr(STATS_KEYS.queued);
     pendingJobs.set(String(userId), job.id);
 
   } catch (error) {
     console.error("Navbatga qo'shishda xatolik:", error);
     await ctx.reply("❌ Kechirasiz, so'rovni qabul qilishda xatolik yuz berdi.");
+    await logErrorToChannel(`Navbatga qo'shishda xatolik (userId: ${userId})`, error);
   }
+});
+
+// --- ⭐ TELEGRAM STARS ORQALI QO'SHIMCHA GENERATSIYA SOTIB OLISH ---
+// Kunlik bepul limit tugaganda ko'rsatiladigan tugma orqali chaqiriladi.
+// Telegram Stars (XTR) — Telegram'ning o'z ichki valyutasi, alohida
+// to'lov provayderi (provider_token) SHART EMAS.
+bot.action('buy_credit', async (ctx) => {
+  const userId = ctx.from.id;
+  const language = (await getUser(connection, userId))?.language || 'uz';
+
+  await ctx.answerCbQuery();
+
+  try {
+    await ctx.replyWithInvoice({
+      title: t(language, 'invoiceTitle'),
+      description: t(language, 'invoiceDescription'),
+      payload: `extra_credit_${userId}_${Date.now()}`,
+      provider_token: '', // Telegram Stars uchun bo'sh qoldiriladi
+      currency: 'XTR',
+      prices: [{ label: t(language, 'invoiceLabel'), amount: 1 }], // 1 ta Star
+    });
+  } catch (error) {
+    console.error('[Stars] Invoice yuborishda xatolik:', error);
+    await ctx.reply(t(language, 'paymentFailed'));
+    await logErrorToChannel(`Stars invoice yuborishda xatolik (userId: ${userId})`, error);
+  }
+});
+
+// Telegram to'lovni tasdiqlashdan oldin so'raydigan tekshiruv — deyarli
+// har doim to'g'ridan-to'g'ri tasdiqlanadi (bu yerda maxsus zaxira/inventar
+// tekshiruvi shart emas, chunki "tovar" cheksiz — shunchaki kredit balansi).
+bot.on('pre_checkout_query', async (ctx) => {
+  await ctx.answerPreCheckoutQuery(true);
+});
+
+// To'lov muvaffaqiyatli yakunlangach — foydalanuvchi balansiga +1 kredit
+// qo'shiladi.
+bot.on('successful_payment', async (ctx) => {
+  const userId = ctx.from.id;
+  const language = (await getUser(connection, userId))?.language || 'uz';
+
+  await addCredits(connection, userId, 1);
+  await ctx.reply(t(language, 'creditPurchased'), MODE_KEYBOARD);
 });
 
 // Express server (Render/Health-check uchun)
@@ -724,7 +867,17 @@ app.get('/', (req, res) => {
 // mumkin. Webhook rejimida esa polling umuman yo'q: Telegram o'zi bizning
 // URL'imizga POST so'rov yuboradi, shuning uchun bir nechta konteyner
 // bir lahzaga tirik bo'lib qolsa ham konflikt yuzaga kelmaydi.
-const WEBHOOK_PATH = `/telegram-webhook/${process.env.TELEGRAM_BOT_TOKEN}`;
+const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+const WEBHOOK_PATH = `/telegram-webhook/${BOT_TOKEN}`;
+
+// Loglarda to'liq bot tokeni chiqib ketmasligi uchun (masalan Render/CI
+// log'lari uchinchi shaxslarga ko'rinishi mumkin) — faqat boshi va oxiri
+// ko'rsatiladi, qolgani "..." bilan yashiriladi.
+function maskToken(token) {
+  if (!token || token.length < 10) return '***';
+  return `${token.slice(0, 6)}...${token.slice(-4)}`;
+}
+const MASKED_WEBHOOK_PATH = `/telegram-webhook/${maskToken(BOT_TOKEN)}`;
 // Render web-service'lar uchun bu o'zgaruvchini avtomatik o'zi beradi
 // (masalan https://prezentation-ai-telegram-2.onrender.com)
 const PUBLIC_URL = process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_URL;
@@ -748,9 +901,10 @@ app.listen(PORT, async () => {
     // yo'q), chunki bu shunchaki "qayerga POST yubor" degan sozlama,
     // polling kabi "session egallash" emas.
     await bot.telegram.setWebhook(`${PUBLIC_URL}${WEBHOOK_PATH}`);
-    console.log(`[Telegram Bot] Webhook o'rnatildi: ${PUBLIC_URL}${WEBHOOK_PATH}`);
+    console.log(`[Telegram Bot] Webhook o'rnatildi: ${PUBLIC_URL}${MASKED_WEBHOOK_PATH}`);
   } catch (err) {
     console.error("[Telegram Bot] Webhook o'rnatishda xatolik:", err.message);
+    await logErrorToChannel("Webhook o'rnatishda xatolik", err);
   }
 });
 
