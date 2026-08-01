@@ -4,6 +4,9 @@
   "description": "Production-grade AI Presentation Platform",
   "main": "src/index.js",
   "type": "module",
+  "engines": {
+    "node": ">=20.9.0"
+  },
   "scripts": {
     "start": "node src/index.js",
     "worker": "node src/worker.js",
