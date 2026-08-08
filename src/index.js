@@ -23,7 +23,28 @@ const PORT = process.env.PORT || 3000;
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
-const connection = new Redis(redisUrl, { maxRetriesPerRequest: null });
+
+// Upstash "max requests limit exceeded" xatosiga uchraganda ioredis/BullMQ
+// standart holatda deyarli darhol (millisekundlar ichida) qayta urinaveradi —
+// bu esa limitni tezroq tugatadi va reset bo'lgandan keyin ham darhol yana
+// tugab qolishiga sabab bo'ladi. Shuning uchun eksponensial backoff bilan
+// urinishlar orasini asta-sekin uzaytiramiz (max 30s), server resurslarini
+// behuda sarflamaslik va limitni "dam olishga" imkon berish uchun.
+const connection = new Redis(redisUrl, {
+  maxRetriesPerRequest: null,
+  retryStrategy(times) {
+    const delay = Math.min(times * 1000, 30000);
+    console.warn(`[Redis] Qayta ulanish urinishi #${times}, ${delay}ms kutilmoqda...`);
+    return delay;
+  },
+  reconnectOnError(err) {
+    // Upstash limit xatosi ulanishni uzmaydi (bu buyruq darajasidagi xato),
+    // shuning uchun reconnect shart emas — faqat haqiqiy tarmoq xatolarida
+    // qayta ulanamiz.
+    const targetError = 'READONLY';
+    return err.message.includes(targetError);
+  },
+});
 
 // BullMQ navbatini yaratamiz. defaultJobOptions orqali har bir vazifa
 // uchun avtomatik "tozalash" siyosati o'rnatiladi — aks holda Redis'da
@@ -336,6 +357,34 @@ async function processReferatJob({ chatId, prompt, language, pages, jobId, useCr
 
 worker.on('failed', (job, err) => {
   console.error(`[Job Failed] ID: ${job.id}, Error:`, err);
+});
+
+// Upstash oylik so'rovlar limiti tugaganda BullMQ ichki polling tsikli
+// (bzpopmin/evalsha) to'xtovsiz xato beraveradi. Bunday holatda workerni
+// bir muddatga pauza qilib qo'yamiz — aks holda log to'lib ketadi va
+// limit reset bo'lgan zahoti yana zudlik bilan tugaydi.
+let isPausedForRateLimit = false;
+worker.on('error', async (err) => {
+  console.error('[Worker Error]', err.message);
+
+  if (!isPausedForRateLimit && err.message?.includes('max requests limit exceeded')) {
+    isPausedForRateLimit = true;
+    const PAUSE_MS = 5 * 60 * 1000; // 5 daqiqa
+    console.error(`[Worker] Upstash limiti tugadi. Worker ${PAUSE_MS / 60000} daqiqaga pauza qilinmoqda...`);
+    try {
+      await worker.pause();
+    } catch (pauseErr) {
+      console.error('[Worker] Pauza qilishda xato:', pauseErr.message);
+    }
+    setTimeout(async () => {
+      console.error('[Worker] Pauza tugadi, worker qayta ishga tushirilmoqda...');
+      try {
+        await worker.resume();
+      } finally {
+        isPausedForRateLimit = false;
+      }
+    }, PAUSE_MS);
+  }
 });
 // ----------------------------------------------------
 
